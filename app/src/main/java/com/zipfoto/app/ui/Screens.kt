@@ -74,6 +74,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.zipfoto.app.JobState
 import com.zipfoto.app.PhotoItem
+import com.zipfoto.app.ReduceMode
 import com.zipfoto.app.Session
 import java.time.LocalDate
 import java.util.Locale
@@ -90,11 +91,15 @@ class Actions(
 
 private enum class Screen { Home, Select, Running, Done, Failed }
 
+/** Gmail: 25 MB per email in totale; gli allegati occupano ~37% in più (codifica), quindi ~18 MB di file. */
+private const val EMAIL_SAFE_BYTES = 18_000_000L
+
 @Composable
 fun ZipFotoApp(scanning: Boolean, actions: Actions) {
     val items by Session.items.collectAsState()
     val job by Session.job.collectAsState()
     val extra by Session.extraCompression.collectAsState()
+    val mode by Session.reduceMode.collectAsState()
 
     val screen = when (job) {
         is JobState.Running -> Screen.Running
@@ -112,6 +117,8 @@ fun ZipFotoApp(scanning: Boolean, actions: Actions) {
                     scanning = scanning,
                     extra = extra,
                     onExtra = { Session.setExtraCompression(it) },
+                    mode = mode,
+                    onMode = { Session.setReduceMode(it) },
                     onRemove = { Session.remove(it) },
                     onClear = { actions.onNew() },
                     onAddPhotos = actions.onPickPhotos,
@@ -144,7 +151,7 @@ private fun HomeScreen(onPhotos: () -> Unit, onFolder: () -> Unit) {
         Text("ZipFoto", style = T.Display)
         Spacer(Modifier.height(10.dp))
         Text(
-            "Metti centinaia di foto in un solo file ZIP. Qualità originale, nessuna ricompressione.",
+            "Metti centinaia di foto in un solo file ZIP. Qualità originale, oppure ridotte per email e analisi.",
             style = T.Body
         )
         Spacer(Modifier.height(36.dp))
@@ -165,7 +172,7 @@ private fun HomeScreen(onPhotos: () -> Unit, onFolder: () -> Unit) {
 
         Spacer(Modifier.height(32.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Pill("Qualità originale", C.Green)
+            Pill("Originale o ridotte", C.Green)
             Pill("100% offline", C.Blue)
         }
         Spacer(Modifier.height(20.dp))
@@ -187,6 +194,8 @@ private fun SelectionScreen(
     scanning: Boolean,
     extra: Boolean,
     onExtra: (Boolean) -> Unit,
+    mode: ReduceMode,
+    onMode: (ReduceMode) -> Unit,
     onRemove: (Uri) -> Unit,
     onClear: () -> Unit,
     onAddPhotos: () -> Unit,
@@ -266,27 +275,31 @@ private fun SelectionScreen(
                 )
                 Text(".zip", style = T.Small)
             }
-            Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Compressione extra", style = T.Label)
-                    Text(
-                        "Spenta = più veloce, qualità identica. Le foto sono già compresse: il guadagno è minimo.",
-                        style = T.Small.copy(fontSize = 12.sp, lineHeight = 16.sp)
+            Spacer(Modifier.height(12.dp))
+            ModeSelector(mode, items.size, onMode)
+            if (!mode.reduces) {
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Compressione extra", style = T.Label)
+                        Text(
+                            "Spenta = più veloce, qualità identica. Le foto sono già compresse: il guadagno è minimo.",
+                            style = T.Small.copy(fontSize = 12.sp, lineHeight = 16.sp)
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Switch(
+                        checked = extra,
+                        onCheckedChange = onExtra,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = C.Bg,
+                            checkedTrackColor = C.Accent,
+                            uncheckedThumbColor = C.Muted,
+                            uncheckedTrackColor = C.SurfaceHi,
+                            uncheckedBorderColor = C.Line
+                        )
                     )
                 }
-                Spacer(Modifier.width(12.dp))
-                Switch(
-                    checked = extra,
-                    onCheckedChange = onExtra,
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = C.Bg,
-                        checkedTrackColor = C.Accent,
-                        uncheckedThumbColor = C.Muted,
-                        uncheckedTrackColor = C.SurfaceHi,
-                        uncheckedBorderColor = C.Line
-                    )
-                )
             }
             Spacer(Modifier.height(16.dp))
             PrimaryButton(
@@ -295,6 +308,49 @@ private fun SelectionScreen(
                 enabled = items.isNotEmpty() && !scanning
             ) { onCreate(name) }
         }
+    }
+}
+
+/** Scelta tra foto originali e versioni ridotte (per email o per analisi con Copilot). */
+@Composable
+private fun ModeSelector(mode: ReduceMode, count: Int, onMode: (ReduceMode) -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (m in ReduceMode.entries) {
+                val selected = m == mode
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (selected) C.Accent else C.SurfaceHi)
+                        .clickable { onMode(m) }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        m.label,
+                        style = T.Label.copy(color = if (selected) C.Bg else C.Text),
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        val detail = when (mode) {
+            ReduceMode.ORIGINAL -> "Foto identiche all'originale, byte per byte."
+            ReduceMode.LIGHT -> "Schermate e tabelle con testo grande."
+            ReduceMode.MEDIUM -> "Buon compromesso per documenti e schermate."
+            ReduceMode.HIGH -> "Per scritte a mano e testo piccolo."
+        }
+        Text(
+            if (mode.reduces) {
+                "$detail Lato lungo ${mode.longSide} px, JPEG qualità ${mode.quality}. " +
+                    "Stima circa ${fmtBytes(count * mode.avgKb * 1000L)} (dipende dalle foto). Non è senza perdita."
+            } else {
+                detail
+            },
+            style = T.Small.copy(fontSize = 12.sp, lineHeight = 16.sp)
+        )
     }
 }
 
@@ -455,7 +511,33 @@ private fun DoneScreen(d: JobState.Done, onShare: (Uri) -> Unit, onNew: () -> Un
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(24.dp))
-        Pill("Originali, byte per byte", C.Green)
+        if (d.mode.reduces) {
+            Pill("Ridotte · ${d.mode.longSide} px · JPEG q${d.mode.quality}", C.Accent)
+            Spacer(Modifier.height(14.dp))
+            Text(
+                "Da ${fmtBytes(d.inBytes)} a ${fmtBytes(d.outBytes)}",
+                style = T.Small,
+                textAlign = TextAlign.Center
+            )
+            if (d.keptOriginal > 0) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "${d.keptOriginal} foto lasciate in originale (già leggere o non riducibili)",
+                    style = T.Small,
+                    textAlign = TextAlign.Center
+                )
+            }
+            if (d.outBytes > EMAIL_SAFE_BYTES) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Sopra ~18 MB: Gmail ha il limite di 25 MB per email e oltre trasforma gli allegati in link Drive.",
+                    style = T.Small.copy(color = C.Accent),
+                    textAlign = TextAlign.Center
+                )
+            }
+        } else {
+            Pill("Originali, byte per byte", C.Green)
+        }
         if (d.skipped > 0) {
             Spacer(Modifier.height(14.dp))
             Text("${d.skipped} foto non leggibili sono state saltate", style = T.Small.copy(color = C.Accent))

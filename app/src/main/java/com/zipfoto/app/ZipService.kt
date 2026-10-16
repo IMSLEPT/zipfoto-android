@@ -27,6 +27,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import java.io.ByteArrayInputStream
 import java.io.InputStream
 
 /**
@@ -73,7 +74,9 @@ class ZipService : Service() {
 
     private suspend fun runZip(items: List<PhotoItem>, out: Uri) {
         val job = currentCoroutineContext()[Job]!!
-        val level = if (Session.extraCompression.value) 6 else 0
+        val mode = Session.reduceMode.value
+        // DEFLATE extra serve solo agli originali: i JPEG ridotti non si comprimono ulteriormente.
+        val level = if (!mode.reduces && Session.extraCompression.value) 6 else 0
         val t0 = SystemClock.elapsedRealtime()
         val total = items.size
         val bytesTotal = items.sumOf { if (it.size > 0) it.size else 0L }
@@ -81,6 +84,8 @@ class ZipService : Service() {
         var doneBytes = 0L
         var doneCount = 0
         var skipped = 0
+        var reducedCount = 0
+        var keptOriginal = 0
         var current = ""
         var outBytes = 0L
         var success = false
@@ -126,9 +131,27 @@ class ZipService : Service() {
                     job.ensureActive()
                     publish(false)
                 }
+                val noProgress = StreamingZipWriter.Listener { }
                 for (item in items) {
                     job.ensureActive()
                     current = item.name
+                    val entryName = if (item.folder.isEmpty()) item.name else item.folder + "/" + item.name
+
+                    if (mode.reduces) {
+                        val bytes = reduceOne(item, mode)
+                        // Se la versione ridotta non è più leggera dell'originale, si tiene l'originale.
+                        if (bytes != null && (item.size <= 0 || bytes.size < item.size)) {
+                            ByteArrayInputStream(bytes).use {
+                                zip.addEntry(names.unique(jpgName(entryName)), item.modified, it, noProgress)
+                            }
+                            doneBytes += if (item.size > 0) item.size else bytes.size.toLong()
+                            reducedCount++
+                            doneCount++
+                            publish(false)
+                            continue
+                        }
+                    }
+
                     val input = openOriginal(item.uri)
                     if (input == null) {
                         skipped++
@@ -136,7 +159,7 @@ class ZipService : Service() {
                         publish(true)
                         continue
                     }
-                    val entryName = if (item.folder.isEmpty()) item.name else item.folder + "/" + item.name
+                    if (mode.reduces) keptOriginal++
                     input.use { zip.addEntry(names.unique(entryName), item.modified, it, listener) }
                     doneCount++
                     publish(false)
@@ -151,7 +174,8 @@ class ZipService : Service() {
             Session.setJob(
                 JobState.Done(
                     out, doneCount - skipped, doneBytes, outBytes,
-                    (SystemClock.elapsedRealtime() - t0) / 1000, skipped
+                    (SystemClock.elapsedRealtime() - t0) / 1000, skipped,
+                    mode, reducedCount, keptOriginal
                 )
             )
         } catch (e: CancellationException) {
@@ -164,9 +188,27 @@ class ZipService : Service() {
         } finally {
             releaseWakeLock()
             stopForeground(STOP_FOREGROUND_REMOVE)
-            if (success) showDoneNotification(doneCount - skipped)
+            if (success) showDoneNotification(doneCount - skipped, mode.reduces)
             stopSelf()
         }
+    }
+
+    /** Versione ridotta (JPEG) della foto, o null se non si può ridurre: si userà l'originale. */
+    private fun reduceOne(item: PhotoItem, mode: ReduceMode): ByteArray? {
+        if (!ImageReducer.canReduce(item.name)) return null
+        return ImageReducer.reduce({ openOriginal(item.uri) }, mode)
+    }
+
+    /** Nome della voce nello ZIP con estensione .jpg (la foto ridotta è sempre un JPEG). */
+    private fun jpgName(path: String): String {
+        val slash = path.lastIndexOf('/')
+        val dot = path.lastIndexOf('.')
+        if (dot > slash + 1) {
+            val ext = path.substring(dot + 1).lowercase()
+            if (ext == "jpg" || ext == "jpeg") return path
+            return path.substring(0, dot) + ".jpg"
+        }
+        return "$path.jpg"
     }
 
     /** Apre l'originale; se possibile chiede al sistema la versione non "redatta". */
@@ -246,11 +288,14 @@ class ZipService : Service() {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
 
-    private fun showDoneNotification(files: Int) {
+    private fun showDoneNotification(files: Int, reduced: Boolean) {
         val n = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("ZIP pronto")
-            .setContentText("$files foto archiviate in qualità originale")
+            .setContentText(
+                if (reduced) "$files foto ridotte e archiviate"
+                else "$files foto archiviate in qualità originale"
+            )
             .setAutoCancel(true)
             .setContentIntent(openAppIntent())
             .build()

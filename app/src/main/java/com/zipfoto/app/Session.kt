@@ -20,6 +20,9 @@ object Session {
     private val _extraCompression = MutableStateFlow(false)
     val extraCompression: StateFlow<Boolean> = _extraCompression.asStateFlow()
 
+    private val _reduceMode = MutableStateFlow(ReduceMode.ORIGINAL)
+    val reduceMode: StateFlow<ReduceMode> = _reduceMode.asStateFlow()
+
     @Volatile
     var pendingOutput: Uri? = null
 
@@ -44,6 +47,10 @@ object Session {
 
     fun setExtraCompression(value: Boolean) {
         _extraCompression.value = value
+    }
+
+    fun setReduceMode(value: ReduceMode) {
+        _reduceMode.value = value
     }
 
     fun setJob(state: JobState) {
