@@ -39,11 +39,8 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk "dist/ZipFoto-v1.0.${{ github.run_number }}.apk"
           ls -la dist
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ZipFoto-apk
-          path: dist/*.apk
-
+      # Niente upload-artifact: la quota storage di Actions dell'account è esaurita.
+      # L'APK si scarica dalle Release (gli asset delle Release non usano quella quota).
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
