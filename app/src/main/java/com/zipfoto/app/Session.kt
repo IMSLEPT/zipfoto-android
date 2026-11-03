@@ -11,8 +11,8 @@ import kotlinx.coroutines.flow.update
  * Le liste di URI non passano da Intent: con 500+ foto supererebbero il limite del Binder.
  */
 object Session {
-    private val _items = MutableStateFlow<List<PhotoItem>>(emptyList())
-    val items: StateFlow<List<PhotoItem>> = _items.asStateFlow()
+    private val _items = MutableStateFlow<List<MediaItem>>(emptyList())
+    val items: StateFlow<List<MediaItem>> = _items.asStateFlow()
 
     private val _job = MutableStateFlow<JobState>(JobState.Idle)
     val job: StateFlow<JobState> = _job.asStateFlow()
@@ -29,7 +29,7 @@ object Session {
     /** Cartelle scelte con permesso persistente (da rilasciare a fine lavoro). Solo thread principale. */
     val grantedRoots = mutableListOf<Uri>()
 
-    fun addAll(list: List<PhotoItem>) {
+    fun addAll(list: List<MediaItem>) {
         _items.update { current ->
             val seen = HashSet<Uri>(current.size + list.size)
             current.forEach { seen.add(it.uri) }

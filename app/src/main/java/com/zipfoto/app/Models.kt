@@ -2,18 +2,23 @@ package com.zipfoto.app
 
 import android.net.Uri
 
-/** Una foto selezionata. [folder] è il percorso relativo dentro lo ZIP (vuoto = radice). */
-data class PhotoItem(
+/**
+ * Un file multimediale selezionato (foto o video).
+ * [folder] è il percorso relativo dentro lo ZIP (vuoto = radice).
+ */
+data class MediaItem(
     val uri: Uri,
     val name: String,
     val size: Long,
     val modified: Long,
-    val folder: String = ""
+    val folder: String = "",
+    val video: Boolean = false
 )
 
 /**
  * Modalità di archiviazione. ORIGINAL copia i file byte per byte. Le altre ridimensionano il lato
- * lungo e ricodificano in JPEG (perdita di qualità voluta, per email e per l'analisi con Copilot).
+ * lungo delle foto e le ricodificano in JPEG (perdita di qualità voluta, per email e per l'analisi con Copilot).
+ * I video restano sempre originali, in qualsiasi modalità.
  * [avgKb] è il peso medio per foto misurato su 49 foto di prova (stima, dipende dal soggetto).
  */
 enum class ReduceMode(val label: String, val longSide: Int, val quality: Int, val avgKb: Int) {
@@ -42,6 +47,7 @@ sealed interface JobState {
     data class Done(
         val output: Uri,
         val files: Int,
+        val videos: Int,
         val inBytes: Long,
         val outBytes: Long,
         val seconds: Long,
@@ -49,7 +55,9 @@ sealed interface JobState {
         val mode: ReduceMode = ReduceMode.ORIGINAL,
         val reducedCount: Int = 0,
         val keptOriginal: Int = 0
-    ) : JobState
+    ) : JobState {
+        val photos: Int get() = files - videos
+    }
 
     data class Failed(val message: String) : JobState
 }

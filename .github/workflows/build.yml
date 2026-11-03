@@ -36,7 +36,7 @@ jobs:
       - name: Rename APK
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk "dist/ZipFoto-v1.0.${{ github.run_number }}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "dist/Zippix-v1.0.${{ github.run_number }}.apk"
           ls -la dist
 
       # Niente upload-artifact: la quota storage di Actions dell'account è esaurita.
@@ -46,5 +46,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "v1.0.${{ github.run_number }}" dist/*.apk \
-            --title "ZipFoto v1.0.${{ github.run_number }}" \
+            --title "Zippix v1.0.${{ github.run_number }}" \
             --notes "APK firmato, pronto da installare. Build #${{ github.run_number }} del commit ${GITHUB_SHA::7}."

@@ -20,18 +20,19 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import androidx.lifecycle.lifecycleScope
 import com.zipfoto.app.ui.Actions
-import com.zipfoto.app.ui.ZipFotoApp
-import com.zipfoto.app.ui.ZipFotoTheme
+import com.zipfoto.app.ui.ZippixApp
+import com.zipfoto.app.ui.ZippixTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Selettore documenti a scelta multipla, senza limite di elementi, con permesso persistente. */
-class OpenImages : ActivityResultContract<Unit, List<Uri>>() {
+/** Selettore documenti a scelta multipla per foto e video, senza limite di elementi, con permesso persistente. */
+class OpenMedia : ActivityResultContract<Unit, List<Uri>>() {
     override fun createIntent(context: Context, input: Unit): Intent =
         Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            type = "image/*"
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/*", "video/*"))
             putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
         }
@@ -53,11 +54,11 @@ class OpenImages : ActivityResultContract<Unit, List<Uri>>() {
 class MainActivity : ComponentActivity() {
 
     private val scanning = mutableStateOf(false)
-    private var pendingName = "Foto.zip"
+    private var pendingName = "Archivio.zip"
     private var askedNotifications = false
 
-    private val pickImages = registerForActivityResult(OpenImages()) { uris ->
-        if (uris.isNotEmpty()) addPhotos(uris, persist = true)
+    private val pickMedia = registerForActivityResult(OpenMedia()) { uris ->
+        if (uris.isNotEmpty()) addMedia(uris, persist = true, onlyMedia = false)
     }
 
     private val pickFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -80,7 +81,7 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         )
         val actions = Actions(
-            onPickPhotos = { pickImages.launch(Unit) },
+            onPickMedia = { pickMedia.launch(Unit) },
             onPickFolder = { pickFolder.launch(null) },
             onCreate = { name -> requestDestination(name) },
             onCancel = { cancelZip() },
@@ -89,8 +90,8 @@ class MainActivity : ComponentActivity() {
             onBackToSelection = { Session.setJob(JobState.Idle) }
         )
         setContent {
-            ZipFotoTheme {
-                ZipFotoApp(scanning = scanning.value, actions = actions)
+            ZippixTheme {
+                ZippixApp(scanning = scanning.value, actions = actions)
             }
         }
         if (savedInstanceState == null) handleIncoming(intent)
@@ -101,31 +102,35 @@ class MainActivity : ComponentActivity() {
         handleIncoming(intent)
     }
 
-    // ---- ingresso foto ---------------------------------------------------------------------
+    // ---- ingresso file ---------------------------------------------------------------------
 
     private fun handleIncoming(i: Intent?) {
         if (i == null) return
         when (i.action) {
             Intent.ACTION_SEND -> {
                 val uri = IntentCompat.getParcelableExtra(i, Intent.EXTRA_STREAM, Uri::class.java)
-                if (uri != null) addPhotos(listOf(uri), persist = false)
+                if (uri != null) addMedia(listOf(uri), persist = false, onlyMedia = true)
             }
             Intent.ACTION_SEND_MULTIPLE -> {
                 val list = IntentCompat.getParcelableArrayListExtra(i, Intent.EXTRA_STREAM, Uri::class.java)
-                if (list != null && list.isNotEmpty()) addPhotos(list, persist = false)
+                if (list != null && list.isNotEmpty()) addMedia(list, persist = false, onlyMedia = true)
             }
         }
     }
 
-    private fun addPhotos(uris: List<Uri>, persist: Boolean) {
+    private fun addMedia(uris: List<Uri>, persist: Boolean, onlyMedia: Boolean) {
         lifecycleScope.launch {
             scanning.value = true
             try {
                 val items = withContext(Dispatchers.IO) {
                     if (persist) uris.forEach { tryPersist(it) }
-                    Scanner.describe(applicationContext, uris)
+                    Scanner.describe(applicationContext, uris, onlyMedia)
                 }
-                Session.addAll(items)
+                if (items.isEmpty()) {
+                    Toast.makeText(this@MainActivity, "Nessuna foto o video valido tra quelli scelti", Toast.LENGTH_LONG).show()
+                } else {
+                    Session.addAll(items)
+                }
             } finally {
                 scanning.value = false
             }
@@ -140,7 +145,7 @@ class MainActivity : ComponentActivity() {
             try {
                 val items = Scanner.scanTree(applicationContext, tree)
                 if (items.isEmpty()) {
-                    Toast.makeText(this@MainActivity, "Nessuna foto trovata in questa cartella", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, "Nessuna foto o video in questa cartella", Toast.LENGTH_LONG).show()
                 } else {
                     Session.addAll(items)
                 }
@@ -183,7 +188,7 @@ class MainActivity : ComponentActivity() {
             .removeSuffix(".zip").removeSuffix(".ZIP")
             .replace(Regex("[\\\\/:*?\"<>|]"), "_")
             .trim()
-        pendingName = (if (base.isEmpty()) "Foto" else base) + ".zip"
+        pendingName = (if (base.isEmpty()) "Archivio" else base) + ".zip"
 
         val needsAsk = Build.VERSION.SDK_INT >= 33 && !askedNotifications &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=

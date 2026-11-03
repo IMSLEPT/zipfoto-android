@@ -1,26 +1,28 @@
-# ZipFoto
+# Zippix (ex ZipFoto)
 
-App Android per mettere centinaia di foto (500 e oltre) in un solo file ZIP **senza perdere qualità**.
+App Android per mettere centinaia di foto **e video** (500 file e oltre) in un solo file ZIP **senza perdere qualità**.
+Il nome dell'app è Zippix; il pacchetto resta `com.zipfoto.app`, così l'APK si installa come aggiornamento sopra le versioni precedenti.
 
 ## Come funziona la qualità
 
 Due modalità, scelte nella schermata di selezione:
 
 **Originale (predefinita, senza perdita)**
-- Ogni foto viene copiata **byte per byte** nello ZIP: nessuna ricompressione dell'immagine, nessun ridimensionamento.
-- Di default usa DEFLATE a livello 0 (blocchi "stored"): le foto JPEG/HEIC sono già compresse, quindi comprimere ancora farebbe solo perdere tempo. Lo switch "Compressione extra" abilita DEFLATE livello 6 (sempre senza perdita, ma guadagno minimo).
+- Ogni foto e ogni video viene copiato **byte per byte** nello ZIP: nessuna ricompressione, nessun ridimensionamento.
+- Di default usa DEFLATE a livello 0 (blocchi "stored"): foto JPEG/HEIC e video sono già compressi, quindi comprimere ancora farebbe solo perdere tempo. Lo switch "Compressione extra" abilita DEFLATE livello 6 per le foto (sempre senza perdita, ma guadagno minimo). I video non vengono mai ricompressi.
 
 **Ridotte (con perdita, per email e per l'analisi con Copilot)**
 - Ridimensiona il lato lungo (mai ingrandisce) e ricodifica in JPEG. L'orientamento EXIF è applicato ai pixel; il JPEG risultante non contiene EXIF/GPS.
 - Livelli: *Leggera* 1400 px q75 (≈0,2 MB/foto), *Media* 1600 px q80 (≈0,3 MB/foto), *Alta* 2000 px q85 (≈0,5 MB/foto, per scritte a mano e testo piccolo). I pesi sono medie misurate su 49 foto di schermate e un foglio manoscritto: dipendono dal soggetto.
 - Se la versione ridotta non è più leggera dell'originale, o la foto non è decodificabile, nello ZIP resta l'originale. Le GIF non vengono toccate.
+- **I video restano sempre originali**, in qualsiasi modalità (non vengono ricodificati).
 - Gmail accetta 25 MB totali di allegati per email; la schermata finale avvisa sopra ~18 MB.
 
-Il writer ZIP (`StreamingZipWriter.java`) scrive in streaming con memoria costante e supporta **Zip64**: archivi oltre 4 GB e oltre 65 535 file. Il lavoro gira in un servizio in primo piano: continua con lo schermo bloccato.
+Il writer ZIP (`StreamingZipWriter.java`) scrive in streaming con memoria costante e supporta **Zip64**: archivi oltre 4 GB, oltre 65 535 file e, per singola voce, video oltre 4 GB (le voci da 2 GB in su, o di dimensione ignota, sono scritte in Zip64). Il lavoro gira in un servizio in primo piano: continua con lo schermo bloccato.
 
 ## Uso
 
-1. **Scegli le foto** (selettore documenti, nessun limite di quantità) o **Scegli una cartella** (sottocartelle incluse), oppure dalla Galleria: *Condividi → ZipFoto*.
+1. **Scegli foto e video** (selettore documenti, nessun limite di quantità) o **Scegli una cartella** (sottocartelle incluse), oppure dalla Galleria: *Condividi → Zippix*.
 2. Scegli *Originale* o un livello ridotto, dai un nome, scegli dove salvare (Download, Drive, ecc.), tocca **Crea ZIP**.
 3. Al termine puoi condividere lo ZIP.
 
@@ -35,7 +37,15 @@ In locale: `./gradlew assembleRelease` (serve Android SDK 35 e JDK 17).
 javac -d out app/src/main/java/com/zipfoto/app/zip/*.java tools/ZipSelfTest.java
 java -cp out ZipSelfTest big /tmp/big.zip 0 /tmp/big.manifest      # ~4,8 GB, forza Zip64
 python3 tools/verify_zip.py /tmp/big.zip /tmp/big.manifest
+
+java -cp out ZipSelfTest mixed /tmp/mixed.zip 0 /tmp/mixed.manifest   # voci Zip64 e normali, livelli misti
+python3 tools/verify_zip.py /tmp/mixed.zip /tmp/mixed.manifest
+unzip -t /tmp/mixed.zip
 ```
+
+## Grafica
+
+Lo stile dell'interfaccia deriva dall'icona: blu notte `#021A5F`, zip in cobalto/ciano (`#0086FD`, `#01B7FE`, `#004EDB`), superfici "carta" chiare con bordo bianco, gradiente arancio → magenta → viola per foto e video. L'icona è adattiva: il disegno sta dentro la zona sicura (68 dp su 108), così nessuna maschera del launcher (cerchio, squircle, rettangolo arrotondato) taglia i bordi.
 
 ## Note
 

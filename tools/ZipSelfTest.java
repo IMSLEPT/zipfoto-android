@@ -12,6 +12,7 @@ import java.util.zip.CRC32;
  *   javac -d out app/src/main/java/com/zipfoto/app/zip/*.java tools/ZipSelfTest.java
  *   java -cp out ZipSelfTest small /tmp/small.zip 0   /tmp/small.manifest
  *   java -cp out ZipSelfTest big   /tmp/big.zip   0   /tmp/big.manifest
+ *   java -cp out ZipSelfTest mixed /tmp/mixed.zip 0   /tmp/mixed.manifest   # voci Zip64 e normali, livelli misti
  *   python3 tools/verify_zip.py /tmp/big.zip /tmp/big.manifest
  */
 public class ZipSelfTest {
@@ -44,6 +45,27 @@ public class ZipSelfTest {
                     CRC32 c = new CRC32();
                     c.update(data, 0, data.length);
                     w.addEntry(u, 1_700_000_000_000L + i * 1000L, new ByteArrayInputStream(data), null);
+                    man.println(u + "\t" + c.getValue() + "\t" + size);
+                    total += size;
+                }
+            } else if (mode.equals("mixed")) {
+                // Voci normali e voci Zip64 per-file (come i video grandi), livelli DEFLATE diversi per voce,
+                // compresa una voce vuota in Zip64. Riproduce in piccolo il caso "video oltre 4 GB".
+                for (int i = 0; i < 40; i++) {
+                    boolean video = i % 4 == 0;
+                    String name = video ? "Video/VID_" + i + ".mp4" : "Foto/IMG_" + i + ".jpg";
+                    int size = (i == 8) ? 0 : 1 + rnd.nextInt(2_000_000);
+                    byte[] data = new byte[size];
+                    rnd.nextBytes(data);
+                    if (i % 3 == 0 && size > 1000) {
+                        java.util.Arrays.fill(data, 0, size / 2, (byte) 9);
+                    }
+                    boolean z64 = i % 2 == 0 || video;
+                    int entryLevel = (i % 5 == 0) ? 6 : 0;
+                    String u = names.unique(name);
+                    CRC32 c = new CRC32();
+                    c.update(data, 0, data.length);
+                    w.addEntry(u, 1_700_000_000_000L + i * 1000L, new ByteArrayInputStream(data), null, entryLevel, z64);
                     man.println(u + "\t" + c.getValue() + "\t" + size);
                     total += size;
                 }

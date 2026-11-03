@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ZipFoto"
+rootProject.name = "Zippix"
 include(":app")

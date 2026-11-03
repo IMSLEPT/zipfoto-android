@@ -32,7 +32,7 @@ import java.io.InputStream
 
 /**
  * Crea lo ZIP in un servizio in primo piano: continua anche con schermo spento o app in background.
- * I file sono copiati byte per byte (nessuna ricompressione dell'immagine).
+ * I file sono copiati byte per byte (nessuna ricompressione): i video, sempre.
  */
 class ZipService : Service() {
 
@@ -72,11 +72,11 @@ class ZipService : Service() {
         return START_NOT_STICKY
     }
 
-    private suspend fun runZip(items: List<PhotoItem>, out: Uri) {
+    private suspend fun runZip(items: List<MediaItem>, out: Uri) {
         val job = currentCoroutineContext()[Job]!!
         val mode = Session.reduceMode.value
-        // DEFLATE extra serve solo agli originali: i JPEG ridotti non si comprimono ulteriormente.
-        val level = if (!mode.reduces && Session.extraCompression.value) 6 else 0
+        // DEFLATE extra serve solo alle foto originali: i JPEG ridotti e i video non si comprimono ulteriormente.
+        val extraLevel = if (!mode.reduces && Session.extraCompression.value) 6 else 0
         val t0 = SystemClock.elapsedRealtime()
         val total = items.size
         val bytesTotal = items.sumOf { if (it.size > 0) it.size else 0L }
@@ -84,6 +84,7 @@ class ZipService : Service() {
         var doneBytes = 0L
         var doneCount = 0
         var skipped = 0
+        var videosDone = 0
         var reducedCount = 0
         var keptOriginal = 0
         var current = ""
@@ -124,7 +125,7 @@ class ZipService : Service() {
             val pfd = contentResolver.openFileDescriptor(out, "wt")
                 ?: throw java.io.IOException("Impossibile scrivere nella destinazione scelta")
             ParcelFileDescriptor.AutoCloseOutputStream(pfd).buffered(1 shl 20).use { os ->
-                val zip = StreamingZipWriter(os, level)
+                val zip = StreamingZipWriter(os, 0)
                 val names = ZipNames()
                 val listener = StreamingZipWriter.Listener { n ->
                     doneBytes += n
@@ -137,7 +138,8 @@ class ZipService : Service() {
                     current = item.name
                     val entryName = if (item.folder.isEmpty()) item.name else item.folder + "/" + item.name
 
-                    if (mode.reduces) {
+                    // Foto in modalità ridotta: JPEG più leggero. I video non si toccano mai.
+                    if (mode.reduces && !item.video) {
                         val bytes = reduceOne(item, mode)
                         // Se la versione ridotta non è più leggera dell'originale, si tiene l'originale.
                         if (bytes != null && (item.size <= 0 || bytes.size < item.size)) {
@@ -159,13 +161,20 @@ class ZipService : Service() {
                         publish(true)
                         continue
                     }
-                    if (mode.reduces) keptOriginal++
-                    input.use { zip.addEntry(names.unique(entryName), item.modified, it, listener) }
+                    if (mode.reduces && !item.video) keptOriginal++
+                    // Un video può superare i 4 GB: voce Zip64 quando serve (o se la dimensione è ignota).
+                    val zip64 = item.size >= StreamingZipWriter.ZIP64_ENTRY_THRESHOLD ||
+                        (item.video && item.size <= 0)
+                    val level = if (item.video) 0 else extraLevel
+                    input.use {
+                        zip.addEntry(names.unique(entryName), item.modified, it, listener, level, zip64)
+                    }
+                    if (item.video) videosDone++
                     doneCount++
                     publish(false)
                 }
                 if (zip.entryCount() == 0) {
-                    throw java.io.IOException("Nessuna foto leggibile: controlla i permessi e riseleziona le foto.")
+                    throw java.io.IOException("Nessun file leggibile: controlla i permessi e riseleziona foto e video.")
                 }
                 zip.finish()
                 outBytes = zip.bytesWritten()
@@ -173,7 +182,7 @@ class ZipService : Service() {
             success = true
             Session.setJob(
                 JobState.Done(
-                    out, doneCount - skipped, doneBytes, outBytes,
+                    out, doneCount - skipped, videosDone, doneBytes, outBytes,
                     (SystemClock.elapsedRealtime() - t0) / 1000, skipped,
                     mode, reducedCount, keptOriginal
                 )
@@ -194,7 +203,7 @@ class ZipService : Service() {
     }
 
     /** Versione ridotta (JPEG) della foto, o null se non si può ridurre: si userà l'originale. */
-    private fun reduceOne(item: PhotoItem, mode: ReduceMode): ByteArray? {
+    private fun reduceOne(item: MediaItem, mode: ReduceMode): ByteArray? {
         if (!ImageReducer.canReduce(item.name)) return null
         return ImageReducer.reduce({ openOriginal(item.uri) }, mode)
     }
@@ -244,7 +253,7 @@ class ZipService : Service() {
             msg.contains("ENOSPC", ignoreCase = true) || msg.contains("No space", ignoreCase = true) ->
                 "Spazio insufficiente nella destinazione scelta."
             e is SecurityException ->
-                "Permesso di lettura perso su alcune foto. Riseleziona le foto e riprova."
+                "Permesso di lettura perso su alcuni file. Riseleziona foto e video e riprova."
             msg.isNotBlank() -> msg
             else -> e.javaClass.simpleName
         }
@@ -272,7 +281,7 @@ class ZipService : Service() {
         NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("Creo lo ZIP…")
-            .setContentText("$done di $total foto · $pct%")
+            .setContentText("$done di $total file · $pct%")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setProgress(100, pct, false)
@@ -293,8 +302,8 @@ class ZipService : Service() {
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("ZIP pronto")
             .setContentText(
-                if (reduced) "$files foto ridotte e archiviate"
-                else "$files foto archiviate in qualità originale"
+                if (reduced) "$files file archiviati (foto ridotte, video originali)"
+                else "$files file archiviati in qualità originale"
             )
             .setAutoCancel(true)
             .setContentIntent(openAppIntent())
@@ -306,7 +315,7 @@ class ZipService : Service() {
 
     private fun acquireWakeLock() {
         val pm = getSystemService(PowerManager::class.java)
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ZipFoto:zip").apply {
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Zippix:zip").apply {
             setReferenceCounted(false)
             acquire(4 * 60 * 60 * 1000L)
         }

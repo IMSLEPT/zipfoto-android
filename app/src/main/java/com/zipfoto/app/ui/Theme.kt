@@ -22,18 +22,48 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.zipfoto.app.R
 
-/** Palette: Dark #141413, Light #FAF9F5, Orange #D97757, Blue #6A9BCC, Green #788C5D, Gray #B0AEA5. */
+/**
+ * Palette ricavata dall'icona dell'app: blu notte di fondo, zip in cobalto/ciano,
+ * "carta" chiara con bordo bianco, riquadri foto/video con gradiente arancio → magenta → viola.
+ */
 object C {
-    val Bg = Color(0xFF141413)
-    val Surface = Color(0xFF1E1D1B)
-    val SurfaceHi = Color(0xFF2A2927)
-    val Text = Color(0xFFFAF9F5)
-    val Muted = Color(0xFFB0AEA5)
-    val Accent = Color(0xFFD97757)
-    val AccentLight = Color(0xFFE9926F)
-    val Blue = Color(0xFF6A9BCC)
-    val Green = Color(0xFF788C5D)
-    val Line = Color(0x1FFAF9F5)
+    // sfondi
+    val Bg = Color(0xFF021A5F)
+    val BgDeep = Color(0xFF010E3A)
+    val Tile = Color(0xFF0B2F86)
+
+    // testo su sfondo scuro
+    val Text = Color(0xFFF4F8FF)
+    val Muted = Color(0xFFA9BCEB)
+
+    // "carta" chiara e testo su carta
+    val Paper = Color(0xFFEAF2FD)
+    val PaperLow = Color(0xFFC3D8FC)
+    val Ink = Color(0xFF0A1F5C)
+    val InkMuted = Color(0xFF4A5F96)
+
+    // blu della zip
+    val Cyan = Color(0xFF01B7FE)
+    val Blue = Color(0xFF0086FD)
+    val Cobalt = Color(0xFF004EDB)
+
+    // gradiente foto/video
+    val Amber = Color(0xFFFEB303)
+    val Orange = Color(0xFFFE9218)
+    val Magenta = Color(0xFFEF4B72)
+    val Purple = Color(0xFF9D34D2)
+    val Indigo = Color(0xFF2F26D2)
+
+    // vetro e bordi su sfondo scuro
+    val Glass = Color(0x1AFFFFFF)
+    val Line = Color(0x33FFFFFF)
+}
+
+/** Gradienti ricorrenti. */
+object B {
+    val Primary = Brush.verticalGradient(listOf(C.Cyan, C.Blue, C.Cobalt))
+    val Media = Brush.linearGradient(listOf(C.Amber, C.Orange, C.Magenta, C.Purple, C.Indigo))
+    val Paper = Brush.verticalGradient(listOf(C.Paper, C.PaperLow))
 }
 
 val Poppins = FontFamily(
@@ -49,19 +79,24 @@ object T {
     val Body = TextStyle(fontFamily = Poppins, fontWeight = FontWeight.Normal, fontSize = 15.sp, lineHeight = 23.sp, color = C.Muted)
     val Small = TextStyle(fontFamily = Poppins, fontWeight = FontWeight.Normal, fontSize = 13.sp, lineHeight = 18.sp, color = C.Muted)
     val Label = TextStyle(fontFamily = Poppins, fontWeight = FontWeight.Medium, fontSize = 13.sp, lineHeight = 18.sp, color = C.Text)
-    val Button = TextStyle(fontFamily = Poppins, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = C.Bg)
+    val Button = TextStyle(fontFamily = Poppins, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Color.White)
     val Big = TextStyle(fontFamily = Poppins, fontWeight = FontWeight.SemiBold, fontSize = 54.sp, color = C.Text)
+
+    // stesse voci, per testo scuro sulle superfici "carta"
+    val Title2Ink = Title2.copy(color = C.Ink)
+    val LabelInk = Label.copy(color = C.Ink)
+    val SmallInk = Small.copy(color = C.InkMuted)
 }
 
 @Composable
-fun ZipFotoTheme(content: @Composable () -> Unit) {
+fun ZippixTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
-            primary = C.Accent,
-            onPrimary = C.Bg,
+            primary = C.Blue,
+            onPrimary = Color.White,
             background = C.Bg,
             onBackground = C.Text,
-            surface = C.Surface,
+            surface = C.Bg,
             onSurface = C.Text
         )
     ) {
@@ -71,19 +106,26 @@ fun ZipFotoTheme(content: @Composable () -> Unit) {
     }
 }
 
-/** Sfondo scuro con un alone arancione in alto a destra. */
+/** Sfondo blu notte con un alone ciano in alto a sinistra e uno viola in basso a destra. */
 @Composable
 fun AppBackground(content: @Composable BoxScope.() -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(C.Bg)
+            .background(Brush.verticalGradient(listOf(C.Bg, C.BgDeep)))
             .drawBehind {
                 drawRect(
                     Brush.radialGradient(
-                        colors = listOf(C.Accent.copy(alpha = 0.20f), Color.Transparent),
-                        center = Offset(size.width * 0.9f, -size.width * 0.05f),
-                        radius = size.width * 1.15f
+                        colors = listOf(C.Cyan.copy(alpha = 0.22f), Color.Transparent),
+                        center = Offset(size.width * 0.1f, -size.width * 0.05f),
+                        radius = size.width * 1.1f
+                    )
+                )
+                drawRect(
+                    Brush.radialGradient(
+                        colors = listOf(C.Purple.copy(alpha = 0.22f), Color.Transparent),
+                        center = Offset(size.width * 0.95f, size.height * 0.98f),
+                        radius = size.width * 1.0f
                     )
                 )
             }
