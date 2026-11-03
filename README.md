@@ -9,13 +9,15 @@ Due modalità, scelte nella schermata di selezione:
 
 **Originale (predefinita, senza perdita)**
 - Ogni foto e ogni video viene copiato **byte per byte** nello ZIP: nessuna ricompressione, nessun ridimensionamento.
-- Di default usa DEFLATE a livello 0 (blocchi "stored"): foto JPEG/HEIC e video sono già compressi, quindi comprimere ancora farebbe solo perdere tempo. Lo switch "Compressione extra" abilita DEFLATE livello 6 per le foto (sempre senza perdita, ma guadagno minimo). I video non vengono mai ricompressi.
+- Di default usa DEFLATE a livello 0 (blocchi "stored"): foto JPEG/HEIC e video sono già compressi, quindi comprimere ancora farebbe solo perdere tempo. Lo switch "Compressione extra" abilita DEFLATE livello 6 per le foto (sempre senza perdita, ma guadagno minimo). Con DEFLATE i video non vengono mai ricompressi (restano identici).
 
 **Ridotte (con perdita, per email e per l'analisi con Copilot)**
 - Ridimensiona il lato lungo (mai ingrandisce) e ricodifica in JPEG. L'orientamento EXIF è applicato ai pixel; il JPEG risultante non contiene EXIF/GPS.
 - Livelli: *Leggera* 1400 px q75 (≈0,2 MB/foto), *Media* 1600 px q80 (≈0,3 MB/foto), *Alta* 2000 px q85 (≈0,5 MB/foto, per scritte a mano e testo piccolo). I pesi sono medie misurate su 49 foto di schermate e un foglio manoscritto: dipendono dal soggetto.
 - Se la versione ridotta non è più leggera dell'originale, o la foto non è decodificabile, nello ZIP resta l'originale. Le GIF non vengono toccate.
-- **I video restano sempre originali**, in qualsiasi modalità (non vengono ricodificati).
+- **Anche i video vengono ridotti** (Media3 Transformer, codificatore hardware del telefono): ricodifica H.264 + audio AAC con lato corto e bitrate massimi per livello: *Leggera* 480p / 1,2 Mbps (≈9 MB al minuto), *Media* 720p / 2,5 Mbps (≈19 MB al minuto), *Alta* 1080p / 5 Mbps (≈38 MB al minuto). Non ingrandisce mai e il bitrate non supera mai quello del sorgente. Il file ridotto è un MP4 (estensione cambiata in `.mp4`).
+- Se un video è già abbastanza leggero, se la versione ridotta non è almeno ~5% più piccola, o se la ricodifica fallisce (es. formato non supportato dal telefono), nello ZIP resta l'originale e la schermata finale lo dice. Per la ricodifica serve spazio libero nella cache dell'app pari al peso del video.
+- La ricodifica richiede tempo (dipende dalla durata del video e dal telefono) e il progresso è mostrato nella schermata di avanzamento.
 - Gmail accetta 25 MB totali di allegati per email; la schermata finale avvisa sopra ~18 MB.
 
 Il writer ZIP (`StreamingZipWriter.java`) scrive in streaming con memoria costante e supporta **Zip64**: archivi oltre 4 GB, oltre 65 535 file e, per singola voce, video oltre 4 GB (le voci da 2 GB in su, o di dimensione ignota, sono scritte in Zip64). Il lavoro gira in un servizio in primo piano: continua con lo schermo bloccato.

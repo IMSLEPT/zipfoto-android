@@ -16,25 +16,39 @@ data class MediaItem(
 )
 
 /**
- * Modalità di archiviazione. ORIGINAL copia i file byte per byte. Le altre ridimensionano il lato
- * lungo delle foto e le ricodificano in JPEG (perdita di qualità voluta, per email e per l'analisi con Copilot).
- * I video restano sempre originali, in qualsiasi modalità.
+ * Modalità di archiviazione. ORIGINAL copia i file byte per byte. Le altre riducono il peso:
+ * le foto vengono ridimensionate sul lato lungo e ricodificate in JPEG, i video vengono ricodificati in H.264
+ * (lato corto e bitrate sotto). La riduzione comporta una perdita di qualità voluta (per email e analisi con Copilot).
  * [avgKb] è il peso medio per foto misurato su 49 foto di prova (stima, dipende dal soggetto).
+ * [videoShortSide] è il lato corto massimo del video (es. 480 per 854x480); un video già più piccolo non viene ingrandito.
+ * [videoBitrate] è il bitrate video massimo in bit al secondo.
  */
-enum class ReduceMode(val label: String, val longSide: Int, val quality: Int, val avgKb: Int) {
-    ORIGINAL("Originale", 0, 0, 0),
-    LIGHT("Leggera", 1400, 75, 195),
-    MEDIUM("Media", 1600, 80, 285),
-    HIGH("Alta", 2000, 85, 510);
+enum class ReduceMode(
+    val label: String,
+    val longSide: Int,
+    val quality: Int,
+    val avgKb: Int,
+    val videoShortSide: Int,
+    val videoBitrate: Int
+) {
+    ORIGINAL("Originale", 0, 0, 0, 0, 0),
+    LIGHT("Leggera", 1400, 75, 195, 480, 1_200_000),
+    MEDIUM("Media", 1600, 80, 285, 720, 2_500_000),
+    HIGH("Alta", 2000, 85, 510, 1080, 5_000_000);
 
     val reduces: Boolean get() = longSide > 0
+
+    /** Peso approssimato di un minuto di video ridotto, in MB (solo video; l'audio aggiunge ~0,7 MB al minuto). */
+    val videoMbPerMinute: Int get() = (videoBitrate * 60L / 8 / 1_000_000L).toInt()
 }
 
 /** Un file che non è finito nello ZIP, con il motivo in parole semplici. */
 data class Problem(val name: String, val reason: String)
 
-/** Un video che è stato davvero scritto nello ZIP (nome nello ZIP e byte copiati). */
-data class VideoLine(val name: String, val bytes: Long)
+/** Un video che è stato davvero scritto nello ZIP: nome nello ZIP, byte scritti e byte dell'originale. */
+data class VideoLine(val name: String, val bytes: Long, val originalBytes: Long = bytes) {
+    val reduced: Boolean get() = originalBytes > 0 && bytes < originalBytes
+}
 
 enum class VerifyStatus {
     /** Struttura rilevata e contenuto di tutti i file riletto e confrontato (CRC). */
@@ -83,6 +97,8 @@ sealed interface JobState {
         val mode: ReduceMode = ReduceMode.ORIGINAL,
         val reducedCount: Int = 0,
         val keptOriginal: Int = 0,
+        val reducedVideos: Int = 0,
+        val lightVideos: Int = 0,
         val verification: Verification = Verification(VerifyStatus.SKIPPED),
         val videoLines: List<VideoLine> = emptyList(),
         val problems: List<Problem> = emptyList(),

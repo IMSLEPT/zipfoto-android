@@ -328,14 +328,14 @@ private fun SelectionScreen(
             }
             Spacer(Modifier.height(12.dp))
             ModeSelector(mode, photoCount, videoCount, onMode)
-            if (!mode.reduces) {
+            if (!mode.reduces && photoCount > 0) {
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("Compressione extra", style = T.LabelInk)
                         Text(
-                            "Spenta = più veloce, qualità identica. Foto e video sono già compressi: " +
-                                "il guadagno è minimo e vale solo per le foto.",
+                            "Spenta = più veloce, qualità identica. Le foto sono già compresse: " +
+                                "il guadagno è minimo. Non riguarda i video.",
                             style = T.SmallInk.copy(fontSize = 12.sp, lineHeight = 16.sp)
                         )
                     }
@@ -363,7 +363,7 @@ private fun SelectionScreen(
     }
 }
 
-/** Scelta tra foto originali e versioni ridotte (per email o per analisi con Copilot). I video restano originali. */
+/** Scelta tra originali e versioni ridotte (per email o per analisi con Copilot): vale per le foto e per i video. */
 @Composable
 private fun ModeSelector(mode: ReduceMode, photos: Int, videos: Int, onMode: (ReduceMode) -> Unit) {
     Column(Modifier.fillMaxWidth()) {
@@ -391,27 +391,44 @@ private fun ModeSelector(mode: ReduceMode, photos: Int, videos: Int, onMode: (Re
             }
         }
         Spacer(Modifier.height(8.dp))
-        val detail = when (mode) {
-            ReduceMode.ORIGINAL -> "Foto e video identici all'originale, byte per byte."
-            ReduceMode.LIGHT -> "Schermate e tabelle con testo grande."
-            ReduceMode.MEDIUM -> "Buon compromesso per documenti e schermate."
-            ReduceMode.HIGH -> "Per scritte a mano e testo piccolo."
-        }
         Text(
-            if (mode.reduces) {
-                val estimate = if (photos > 0) {
-                    " Stima circa ${fmtBytes(photos * mode.avgKb * 1000L)} per le foto (dipende dai soggetti)."
-                } else {
-                    ""
-                }
-                val videoNote = if (videos > 0) " I video restano originali." else ""
-                "$detail Lato lungo ${mode.longSide} px, JPEG qualità ${mode.quality}.$estimate$videoNote Non è senza perdita."
-            } else {
-                detail
-            },
+            modeDescription(mode, photos, videos),
             style = T.SmallInk.copy(fontSize = 12.sp, lineHeight = 16.sp)
         )
     }
+}
+
+/** Descrizione del livello scelto, adatta a cosa c'è davvero nella selezione (solo foto, solo video o entrambi). */
+private fun modeDescription(mode: ReduceMode, photos: Int, videos: Int): String {
+    if (!mode.reduces) {
+        return when {
+            videos > 0 && photos == 0 -> "Video identici all'originale, byte per byte."
+            photos > 0 && videos == 0 -> "Foto identiche all'originale, byte per byte."
+            else -> "Foto e video identici all'originale, byte per byte."
+        }
+    }
+    val photoPart = "Foto: lato lungo ${mode.longSide} px, JPEG qualità ${mode.quality}" +
+        if (photos > 0) ", circa ${fmtBytes(photos * mode.avgKb * 1000L)} in tutto (dipende dai soggetti)." else "."
+    val videoPart = "Video: ricodificati H.264 a ${mode.videoShortSide}p, circa ${mode.videoMbPerMinute} MB al minuto " +
+        "(un video già più piccolo o più leggero resta com'è)."
+    val use = when {
+        photos > 0 && videos == 0 -> when (mode) {
+            ReduceMode.LIGHT -> "Schermate e tabelle con testo grande. "
+            ReduceMode.MEDIUM -> "Buon compromesso per documenti e schermate. "
+            else -> "Per scritte a mano e testo piccolo. "
+        }
+        else -> when (mode) {
+            ReduceMode.LIGHT -> "Il più leggero: ideale da inviare. "
+            ReduceMode.MEDIUM -> "Buon compromesso tra peso e nitidezza. "
+            else -> "La migliore qualità tra le ridotte. "
+        }
+    }
+    val body = when {
+        videos > 0 && photos == 0 -> videoPart
+        photos > 0 && videos == 0 -> photoPart
+        else -> "$photoPart $videoPart"
+    }
+    return "$use$body Non è senza perdita."
 }
 
 @Composable
@@ -621,7 +638,11 @@ private fun DoneScreen(d: JobState.Done, onShare: (Uri) -> Unit, onNew: () -> Un
         if (d.videoLines.isNotEmpty()) {
             ReportBlock(
                 title = if (d.videoLines.size == 1) "Video nello ZIP" else "${d.videoLines.size} video nello ZIP",
-                lines = d.videoLines.map { it.name.substringAfterLast('/') + " · " + fmtBytes(it.bytes) },
+                lines = d.videoLines.map {
+                    val n = it.name.substringAfterLast('/')
+                    if (it.reduced) n + " · " + fmtBytes(it.originalBytes) + " → " + fmtBytes(it.bytes)
+                    else n + " · " + fmtBytes(it.bytes)
+                },
                 tint = C.Cyan
             )
             Spacer(Modifier.height(12.dp))
@@ -639,26 +660,36 @@ private fun DoneScreen(d: JobState.Done, onShare: (Uri) -> Unit, onNew: () -> Un
             Spacer(Modifier.height(12.dp))
         }
 
-        if (d.mode.reduces) {
-            Pill("Foto ridotte · ${d.mode.longSide} px · JPEG q${d.mode.quality}", C.Amber)
-            Spacer(Modifier.height(14.dp))
+        val reducedAny = d.reducedCount > 0 || d.reducedVideos > 0
+        if (d.mode.reduces && reducedAny) {
+            if (d.reducedCount > 0) {
+                Pill("Foto ridotte · ${d.mode.longSide} px · JPEG q${d.mode.quality}", C.Amber)
+                Spacer(Modifier.height(8.dp))
+            }
+            if (d.reducedVideos > 0) {
+                Pill("Video ridotti · ${d.mode.videoShortSide}p · H.264", C.Amber)
+                Spacer(Modifier.height(8.dp))
+            }
+            Spacer(Modifier.height(6.dp))
+            val saved = d.inBytes - d.outBytes
             Text(
-                "Da ${fmtBytes(d.inBytes)} a ${fmtBytes(d.outBytes)}",
-                style = T.Small,
+                "Da ${fmtBytes(d.inBytes)} a ${fmtBytes(d.outBytes)}" +
+                    if (saved > 0 && d.inBytes > 0) " (−${saved * 100 / d.inBytes}%)" else "",
+                style = T.Body.copy(color = C.Text),
                 textAlign = TextAlign.Center
             )
-            if (d.videos > 0) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "${d.videos} video inclusi in originale, senza modifiche",
-                    style = T.Small,
-                    textAlign = TextAlign.Center
-                )
-            }
             if (d.keptOriginal > 0) {
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "${d.keptOriginal} foto lasciate in originale (già leggere o non riducibili)",
+                    style = T.Small,
+                    textAlign = TextAlign.Center
+                )
+            }
+            if (d.lightVideos > 0) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "${d.lightVideos} video lasciati in originale (già leggeri per questo livello)",
                     style = T.Small,
                     textAlign = TextAlign.Center
                 )
@@ -671,8 +702,22 @@ private fun DoneScreen(d: JobState.Done, onShare: (Uri) -> Unit, onNew: () -> Un
                     textAlign = TextAlign.Center
                 )
             }
+        } else if (d.mode.reduces) {
+            // Livello ridotto scelto ma nulla da ridurre (es. file già leggeri): lo si dice, senza parlare di JPEG.
+            Pill("Nessun file ridotto: erano già leggeri per questo livello", C.Cyan)
+            if (d.lightVideos > 0 || d.keptOriginal > 0) {
+                Spacer(Modifier.height(8.dp))
+                Text("Inclusi in originale, byte per byte.", style = T.Small, textAlign = TextAlign.Center)
+            }
         } else {
-            Pill(if (d.videos > 0) "Foto e video originali, byte per byte" else "Originali, byte per byte", C.Cyan)
+            Pill(
+                when {
+                    d.videos > 0 && d.photos > 0 -> "Foto e video originali, byte per byte"
+                    d.videos > 0 -> "Video originale, byte per byte"
+                    else -> "Originali, byte per byte"
+                },
+                C.Cyan
+            )
         }
         Spacer(Modifier.height(40.dp))
         PrimaryButton("Condividi ZIP", Modifier.fillMaxWidth()) { onShare(d.output) }

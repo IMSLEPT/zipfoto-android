@@ -30,6 +30,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import java.io.ByteArrayInputStream
+import java.io.File
+import java.io.FileInputStream
 import java.io.FileNotFoundException
 import java.io.IOException
 import java.io.InputStream
@@ -39,7 +41,7 @@ import java.nio.ByteBuffer
 
 /**
  * Crea lo ZIP in un servizio in primo piano: continua anche con schermo spento o app in background.
- * I file sono copiati byte per byte (nessuna ricompressione): i video, sempre.
+ * In modalità Originale i file sono copiati byte per byte; nelle altre foto e video vengono ridotti.
  */
 class ZipService : Service() {
 
@@ -85,6 +87,8 @@ class ZipService : Service() {
         // DEFLATE extra serve solo alle foto originali: i JPEG ridotti e i video non si comprimono ulteriormente.
         val extraLevel = if (!mode.reduces && Session.extraCompression.value) 6 else 0
         val t0 = SystemClock.elapsedRealtime()
+        // Resti di video temporanei di lavori interrotti.
+        cacheDir.listFiles { f -> f.name.startsWith("zippix_video_") }?.forEach { it.delete() }
         val total = items.size
         val bytesTotal = items.sumOf { if (it.size > 0) it.size else 0L }
 
@@ -96,6 +100,8 @@ class ZipService : Service() {
         val videoNames = HashSet<String>()
         var reducedCount = 0
         var keptOriginal = 0
+        var reducedVideos = 0
+        var lightVideos = 0
         var current = ""
         var outBytes = 0L
         var success = false
@@ -149,7 +155,7 @@ class ZipService : Service() {
                     current = item.name
                     val baseName = if (item.folder.isEmpty()) item.name else item.folder + "/" + item.name
 
-                    // Foto in modalità ridotta: JPEG più leggero. I video non si toccano mai.
+                    // Foto in modalità ridotta: JPEG più leggero.
                     if (mode.reduces && !item.video) {
                         val bytes = reduceOne(item, mode)
                         // Se la versione ridotta non è più leggera dell'originale, si tiene l'originale.
@@ -164,6 +170,59 @@ class ZipService : Service() {
                             doneCount++
                             publish(false)
                             continue
+                        }
+                    }
+
+                    // Video in modalità ridotta: ricodifica H.264 (Leggera/Media/Alta). Se non riesce o non conviene,
+                    // si tiene l'originale e lo si dice.
+                    if (mode.reduces && item.video) {
+                        val baseDone = doneBytes
+                        val tmp = File(cacheDir, "zippix_video_${System.nanoTime()}.mp4")
+                        try {
+                            val outcome: VideoReducer.Outcome =
+                                if (cacheDir.usableSpace < maxOf(item.size, 0L) + (64L shl 20)) {
+                                    VideoReducer.Outcome.Failed("spazio libero insufficiente per ridurre il video")
+                                } else {
+                                    VideoReducer.reduce(this@ZipService, item.uri, mode, tmp) { f ->
+                                        doneBytes = baseDone + ((if (item.size > 0) item.size else 0L) * f).toLong()
+                                        publish(false)
+                                    }
+                                }
+                            when (outcome) {
+                                is VideoReducer.Outcome.Reduced -> {
+                                    if (outcome.bytes > 0 && (item.size <= 0 || outcome.bytes < item.size * 0.95)) {
+                                        val entry = names.unique(mp4Name(baseName))
+                                        val z64 = outcome.bytes >= StreamingZipWriter.ZIP64_ENTRY_THRESHOLD
+                                        val read = try {
+                                            FileInputStream(tmp).use {
+                                                zip.addEntry(entry, item.modified, it, noProgress, 0, z64)
+                                            }
+                                        } catch (e: IOException) {
+                                            throw IOException("Interrotto su «${item.name}»: ${reasonOf(e)}", e)
+                                        }
+                                        doneBytes = baseDone + (if (item.size > 0) item.size else read)
+                                        videoLines += VideoLine(entry, read, if (item.size > 0) item.size else read)
+                                        videoNames += entry
+                                        reducedVideos++
+                                        written++
+                                        doneCount++
+                                        publish(false)
+                                        continue
+                                    }
+                                    lightVideos++
+                                    doneBytes = baseDone
+                                }
+                                is VideoReducer.Outcome.AlreadyLight -> {
+                                    lightVideos++
+                                    doneBytes = baseDone
+                                }
+                                is VideoReducer.Outcome.Failed -> {
+                                    notes += "«${item.name}»: non ridotto (${outcome.reason}); incluso in originale"
+                                    doneBytes = baseDone
+                                }
+                            }
+                        } finally {
+                            tmp.delete()
                         }
                     }
 
@@ -257,7 +316,7 @@ class ZipService : Service() {
                 JobState.Done(
                     out, written, videoLines.size, doneBytes, outBytes,
                     (SystemClock.elapsedRealtime() - t0) / 1000, problems.size,
-                    mode, reducedCount, keptOriginal,
+                    mode, reducedCount, keptOriginal, reducedVideos, lightVideos,
                     verification, videoLines.toList(), problems.toList(), notes.toList()
                 )
             )
@@ -468,6 +527,11 @@ class ZipService : Service() {
             d.photos == 0 -> if (d.videos == 1) "1 video" else "${d.videos} video"
             else -> "${d.photos} foto e ${d.videos} video"
         }
+        val reduced = d.reducedCount > 0 || d.reducedVideos > 0
+        val how = when {
+            reduced -> "ridotti da ${fmtSize(d.inBytes)} a ${fmtSize(d.outBytes)}"
+            else -> "in qualità originale"
+        }
         val check = when (d.verification.status) {
             VerifyStatus.FULL -> "controllato"
             VerifyStatus.STRUCTURE -> "struttura controllata"
@@ -478,10 +542,7 @@ class ZipService : Service() {
         val n = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(if (d.clean) "ZIP pronto" else "ZIP pronto, da controllare")
-            .setContentText(
-                if (d.mode.reduces) "$what archiviati (foto ridotte, video originali) · $check$warn"
-                else "$what archiviati in qualità originale · $check$warn"
-            )
+            .setContentText("$what $how · $check$warn")
             .setAutoCancel(true)
             .setContentIntent(openAppIntent())
             .build()

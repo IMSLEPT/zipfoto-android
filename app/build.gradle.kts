@@ -12,8 +12,8 @@ android {
         applicationId = "com.zipfoto.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.3.0"
+        versionCode = 5
+        versionName = "1.4.0"
     }
 
     // Chiave di firma fissa: gli aggiornamenti si installano sopra la versione precedente.
@@ -72,4 +72,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("io.coil-kt:coil-video:2.7.0")
+
+    // Riduzione dei video (ricodifica H.264 con il codificatore hardware). Tutti i moduli Media3 alla stessa versione.
+    implementation("androidx.media3:media3-transformer:1.5.1")
+    implementation("androidx.media3:media3-effect:1.5.1")
+    implementation("androidx.media3:media3-common:1.5.1")
 }
