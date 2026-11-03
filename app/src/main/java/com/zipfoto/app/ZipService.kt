@@ -16,8 +16,10 @@ import android.provider.DocumentsContract
 import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import com.zipfoto.app.zip.MediaSniffer
 import com.zipfoto.app.zip.StreamingZipWriter
 import com.zipfoto.app.zip.ZipNames
+import com.zipfoto.app.zip.ZipVerifier
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -28,7 +30,12 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import java.io.ByteArrayInputStream
+import java.io.FileNotFoundException
+import java.io.IOException
 import java.io.InputStream
+import java.io.InterruptedIOException
+import java.io.PushbackInputStream
+import java.nio.ByteBuffer
 
 /**
  * Crea lo ZIP in un servizio in primo piano: continua anche con schermo spento o app in background.
@@ -83,13 +90,17 @@ class ZipService : Service() {
 
         var doneBytes = 0L
         var doneCount = 0
-        var skipped = 0
-        var videosDone = 0
+        val problems = ArrayList<Problem>()
+        val notes = ArrayList<String>()
+        val videoLines = ArrayList<VideoLine>()
+        val videoNames = HashSet<String>()
         var reducedCount = 0
         var keptOriginal = 0
         var current = ""
         var outBytes = 0L
         var success = false
+        var written = 0
+        var infos: List<StreamingZipWriter.EntryInfo> = emptyList()
 
         var lastPublish = 0L
         var lastNotify = 0L
@@ -111,7 +122,7 @@ class ZipService : Service() {
             val remaining = if (bytesTotal > doneBytes) bytesTotal - doneBytes else 0L
             val eta = if (speed > 1.0) (remaining / speed).toLong() else -1L
             Session.setJob(
-                JobState.Running(doneCount, total, doneBytes, bytesTotal, current, speed.toLong(), eta, skipped)
+                JobState.Running(doneCount, total, doneBytes, bytesTotal, current, speed.toLong(), eta, problems.size)
             )
             if (now - lastNotify >= 1000) {
                 lastNotify = now
@@ -123,7 +134,7 @@ class ZipService : Service() {
 
         try {
             val pfd = contentResolver.openFileDescriptor(out, "wt")
-                ?: throw java.io.IOException("Impossibile scrivere nella destinazione scelta")
+                ?: throw IOException("Impossibile scrivere nella destinazione scelta")
             ParcelFileDescriptor.AutoCloseOutputStream(pfd).buffered(1 shl 20).use { os ->
                 val zip = StreamingZipWriter(os, 0)
                 val names = ZipNames()
@@ -136,55 +147,118 @@ class ZipService : Service() {
                 for (item in items) {
                     job.ensureActive()
                     current = item.name
-                    val entryName = if (item.folder.isEmpty()) item.name else item.folder + "/" + item.name
+                    val baseName = if (item.folder.isEmpty()) item.name else item.folder + "/" + item.name
 
                     // Foto in modalità ridotta: JPEG più leggero. I video non si toccano mai.
                     if (mode.reduces && !item.video) {
                         val bytes = reduceOne(item, mode)
                         // Se la versione ridotta non è più leggera dell'originale, si tiene l'originale.
                         if (bytes != null && (item.size <= 0 || bytes.size < item.size)) {
-                            ByteArrayInputStream(bytes).use {
-                                zip.addEntry(names.unique(jpgName(entryName)), item.modified, it, noProgress)
+                            val entry = names.unique(jpgName(baseName))
+                            val read = ByteArrayInputStream(bytes).use {
+                                zip.addEntry(entry, item.modified, it, noProgress)
                             }
-                            doneBytes += if (item.size > 0) item.size else bytes.size.toLong()
+                            doneBytes += if (item.size > 0) item.size else read
                             reducedCount++
+                            written++
                             doneCount++
                             publish(false)
                             continue
                         }
                     }
 
-                    val input = openOriginal(item.uri)
-                    if (input == null) {
-                        skipped++
+                    val opened = openOriginal(item.uri)
+                    val source = opened.opened
+                    if (source == null) {
+                        problems += Problem(item.name, opened.reason)
                         doneCount++
                         publish(true)
                         continue
                     }
-                    if (mode.reduces && !item.video) keptOriginal++
-                    // Un video può superare i 4 GB: voce Zip64 quando serve (o se la dimensione è ignota).
-                    val zip64 = item.size >= StreamingZipWriter.ZIP64_ENTRY_THRESHOLD ||
-                        (item.video && item.size <= 0)
-                    val level = if (item.video) 0 else extraLevel
-                    input.use {
-                        zip.addEntry(names.unique(entryName), item.modified, it, listener, level, zip64)
+
+                    // Prima lettura: serve a non scrivere voci vuote e a riconoscere il formato dai byte.
+                    val stream = PushbackInputStream(source.stream, MediaSniffer.HEAD_SIZE)
+                    val head = ByteArray(MediaSniffer.HEAD_SIZE)
+                    var headLen = 0
+                    try {
+                        var zeros = 0
+                        while (headLen < head.size && zeros < 3) {
+                            val r = stream.read(head, headLen, head.size - headLen)
+                            if (r < 0) break
+                            if (r == 0) zeros++ else headLen += r
+                        }
+                    } catch (e: IOException) {
+                        runCatching { stream.close() }
+                        problems += Problem(item.name, "lettura interrotta: ${reasonOf(e)}")
+                        doneCount++
+                        publish(true)
+                        continue
                     }
-                    if (item.video) videosDone++
+                    if (headLen == 0) {
+                        runCatching { stream.close() }
+                        problems += Problem(
+                            item.name,
+                            "il file risulta vuoto: l'app che lo contiene non ha restituito alcun dato"
+                        )
+                        doneCount++
+                        publish(true)
+                        continue
+                    }
+                    stream.unread(head, 0, headLen)
+
+                    // I byte contano più di nome e tipo dichiarato: un video senza estensione resta un video.
+                    val sniffed = MediaSniffer.sniff(head, headLen)
+                    val isVideo = if (sniffed != null) MediaSniffer.isVideoMime(sniffed) else item.video
+                    val entryBase = if (sniffed != null) Scanner.withMediaExtension(baseName, sniffed) else baseName
+                    val entryName = names.unique(entryBase)
+
+                    if (mode.reduces && !isVideo) keptOriginal++
+                    // Voce Zip64 solo quando serve: dimensione vera >= 2 GB, oppure ignota per un video.
+                    val realSize = if (source.length > 0) source.length else item.size
+                    val zip64 = if (realSize > 0) StreamingZipWriter.needsZip64Entry(realSize) else isVideo
+                    val level = if (isVideo) 0 else extraLevel
+                    val read = try {
+                        stream.use { zip.addEntry(entryName, item.modified, it, listener, level, zip64) }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: IOException) {
+                        throw IOException("Interrotto su «${item.name}»: ${reasonOf(e)}", e)
+                    }
+                    if (realSize > 0 && read != realSize && (isVideo || read < realSize / 2)) {
+                        notes += "«${item.name}»: letti ${fmtSize(read)} invece di ${fmtSize(realSize)} dichiarati"
+                    }
+                    if (isVideo) {
+                        videoLines += VideoLine(entryName, read)
+                        videoNames += entryName
+                    }
+                    written++
                     doneCount++
                     publish(false)
                 }
                 if (zip.entryCount() == 0) {
-                    throw java.io.IOException("Nessun file leggibile: controlla i permessi e riseleziona foto e video.")
+                    throw IOException(
+                        if (problems.isEmpty()) "Nessun file da archiviare."
+                        else "Nessun file è stato archiviato. " + problems.first().let { "«${it.name}»: ${it.reason}" }
+                    )
                 }
                 zip.finish()
                 outBytes = zip.bytesWritten()
+                infos = zip.entryInfos()
             }
+
+            // Rilettura finale: lo ZIP appena scritto viene riaperto e confrontato con quello che si è scritto.
+            current = "Controllo finale del file ZIP…"
+            publish(true)
+            val verification = verifyOutput(out, infos, outBytes, videoNames, job)
+            job.ensureActive()
+
             success = true
             Session.setJob(
                 JobState.Done(
-                    out, doneCount - skipped, videosDone, doneBytes, outBytes,
-                    (SystemClock.elapsedRealtime() - t0) / 1000, skipped,
-                    mode, reducedCount, keptOriginal
+                    out, written, videoLines.size, doneBytes, outBytes,
+                    (SystemClock.elapsedRealtime() - t0) / 1000, problems.size,
+                    mode, reducedCount, keptOriginal,
+                    verification, videoLines.toList(), problems.toList(), notes.toList()
                 )
             )
         } catch (e: CancellationException) {
@@ -197,15 +271,72 @@ class ZipService : Service() {
         } finally {
             releaseWakeLock()
             stopForeground(STOP_FOREGROUND_REMOVE)
-            if (success) showDoneNotification(doneCount - skipped, mode.reduces)
+            if (success) {
+                val done = Session.job.value as? JobState.Done
+                if (done != null) showDoneNotification(done)
+            }
             stopSelf()
+        }
+    }
+
+    /**
+     * Riapre il file ZIP scritto e lo controlla con [ZipVerifier]. Se la destinazione non si può rileggere
+     * (file non ad accesso casuale, come alcuni provider cloud) il controllo viene dichiarato "non eseguito":
+     * mai spacciato per riuscito.
+     */
+    private fun verifyOutput(
+        out: Uri,
+        infos: List<StreamingZipWriter.EntryInfo>,
+        expectedBytes: Long,
+        videoNames: Set<String>,
+        job: Job
+    ): Verification {
+        val unreadable = Verification(
+            VerifyStatus.SKIPPED, infos.size, 0,
+            "la destinazione non permette di rileggere il file"
+        )
+        val pfd: ParcelFileDescriptor? = try {
+            contentResolver.openFileDescriptor(out, "r")
+        } catch (e: Exception) {
+            null
+        }
+        if (pfd == null) return unreadable
+        val size = pfd.statSize
+        if (size < 0) {
+            // non è un file ad accesso casuale (es. flusso di un provider cloud)
+            pfd.close()
+            return unreadable
+        }
+        if (size != expectedBytes) {
+            pfd.close()
+            return Verification(
+                VerifyStatus.FAILED, infos.size, 0,
+                "scritti $expectedBytes byte, ma il file ne contiene $size"
+            )
+        }
+        // AutoCloseInputStream chiude il descrittore al termine: nessuna doppia chiusura.
+        return ParcelFileDescriptor.AutoCloseInputStream(pfd).use { fis ->
+            val channel = fis.channel
+            val src = object : ZipVerifier.Source {
+                override fun length(): Long = channel.size()
+                override fun readAt(position: Long, buf: ByteArray, off: Int, len: Int): Int {
+                    if (!job.isActive) throw InterruptedIOException("annullato")
+                    return channel.read(ByteBuffer.wrap(buf, off, len), position)
+                }
+            }
+            val r = ZipVerifier.verify(src, infos, DEEP_VERIFY_BYTES, videoNames)
+            when {
+                !r.ok -> Verification(VerifyStatus.FAILED, r.entries, r.deepEntries, r.firstProblem())
+                r.allDeep() -> Verification(VerifyStatus.FULL, r.entries, r.deepEntries)
+                else -> Verification(VerifyStatus.STRUCTURE, r.entries, r.deepEntries)
+            }
         }
     }
 
     /** Versione ridotta (JPEG) della foto, o null se non si può ridurre: si userà l'originale. */
     private fun reduceOne(item: MediaItem, mode: ReduceMode): ByteArray? {
         if (!ImageReducer.canReduce(item.name)) return null
-        return ImageReducer.reduce({ openOriginal(item.uri) }, mode)
+        return ImageReducer.reduce({ openOriginal(item.uri).opened?.stream }, mode)
     }
 
     /** Nome della voce nello ZIP con estensione .jpg (la foto ridotta è sempre un JPEG). */
@@ -220,8 +351,15 @@ class ZipService : Service() {
         return "$path.jpg"
     }
 
-    /** Apre l'originale; se possibile chiede al sistema la versione non "redatta". */
-    private fun openOriginal(uri: Uri): InputStream? {
+    private class Opened(val stream: InputStream, val length: Long)
+
+    private class OpenResult(val opened: Opened?, val reason: String)
+
+    /**
+     * Apre l'originale; se possibile chiede al sistema la versione non "redatta" e la lunghezza vera.
+     * Se non riesce, restituisce il motivo in italiano (mai un fallimento muto).
+     */
+    private fun openOriginal(uri: Uri): OpenResult {
         val candidates = ArrayList<Uri>(2)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && uri.authority == MediaStore.AUTHORITY) {
             try {
@@ -230,14 +368,41 @@ class ZipService : Service() {
             }
         }
         candidates.add(uri)
+        var reason: String? = null
         for (u in candidates) {
+            // 1) descrittore con lunghezza dichiarata (serve a scegliere Zip64 e a controllare la lettura)
+            try {
+                val afd = contentResolver.openAssetFileDescriptor(u, "r")
+                if (afd != null) {
+                    val len = afd.length
+                    return OpenResult(Opened(afd.createInputStream(), len), "")
+                }
+            } catch (e: Exception) {
+                reason = reasonOf(e)
+            }
+            // 2) flusso semplice, lunghezza ignota
             try {
                 val stream = contentResolver.openInputStream(u)
-                if (stream != null) return stream
-            } catch (_: Exception) {
+                if (stream != null) return OpenResult(Opened(stream, -1L), "")
+            } catch (e: Exception) {
+                reason = reasonOf(e)
             }
         }
-        return null
+        return OpenResult(null, reason ?: "l'app che contiene il file non lo ha reso disponibile")
+    }
+
+    private fun reasonOf(e: Throwable): String = when {
+        e is SecurityException -> "permesso di lettura perso: riseleziona il file"
+        e is FileNotFoundException -> "file non trovato (spostato, eliminato o non ancora scaricato da Google Foto/Drive)"
+        e.message?.contains("ENOSPC", ignoreCase = true) == true -> "spazio insufficiente nella destinazione"
+        !e.message.isNullOrBlank() -> e.message!!
+        else -> e.javaClass.simpleName
+    }
+
+    private fun fmtSize(b: Long): String = when {
+        b >= 1L shl 30 -> String.format(java.util.Locale.getDefault(), "%.2f GB", b / (1L shl 30).toDouble())
+        b >= 1L shl 20 -> String.format(java.util.Locale.getDefault(), "%.1f MB", b / (1L shl 20).toDouble())
+        else -> "${b / 1024} KB"
     }
 
     private fun deleteQuietly(uri: Uri) {
@@ -297,13 +462,25 @@ class ZipService : Service() {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .build()
 
-    private fun showDoneNotification(files: Int, reduced: Boolean) {
+    private fun showDoneNotification(d: JobState.Done) {
+        val what = when {
+            d.videos == 0 -> "${d.photos} foto"
+            d.photos == 0 -> if (d.videos == 1) "1 video" else "${d.videos} video"
+            else -> "${d.photos} foto e ${d.videos} video"
+        }
+        val check = when (d.verification.status) {
+            VerifyStatus.FULL -> "controllato"
+            VerifyStatus.STRUCTURE -> "struttura controllata"
+            VerifyStatus.SKIPPED -> "controllo non possibile"
+            VerifyStatus.FAILED -> "CONTROLLO FALLITO"
+        }
+        val warn = if (d.problems.isNotEmpty()) " · ${d.problems.size} saltati" else ""
         val n = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("ZIP pronto")
+            .setContentTitle(if (d.clean) "ZIP pronto" else "ZIP pronto, da controllare")
             .setContentText(
-                if (reduced) "$files file archiviati (foto ridotte, video originali)"
-                else "$files file archiviati in qualità originale"
+                if (d.mode.reduces) "$what archiviati (foto ridotte, video originali) · $check$warn"
+                else "$what archiviati in qualità originale · $check$warn"
             )
             .setAutoCancel(true)
             .setContentIntent(openAppIntent())
@@ -338,5 +515,8 @@ class ZipService : Service() {
         private const val CHANNEL = "zip"
         private const val NOTIF_ID = 1
         private const val DONE_ID = 2
+
+        /** Quanti byte (compressi) rileggere al massimo, a fine lavoro, per confrontare il contenuto con l'originale. */
+        private const val DEEP_VERIFY_BYTES = 4L * 1024 * 1024 * 1024
     }
 }

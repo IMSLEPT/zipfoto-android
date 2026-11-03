@@ -30,6 +30,34 @@ enum class ReduceMode(val label: String, val longSide: Int, val quality: Int, va
     val reduces: Boolean get() = longSide > 0
 }
 
+/** Un file che non è finito nello ZIP, con il motivo in parole semplici. */
+data class Problem(val name: String, val reason: String)
+
+/** Un video che è stato davvero scritto nello ZIP (nome nello ZIP e byte copiati). */
+data class VideoLine(val name: String, val bytes: Long)
+
+enum class VerifyStatus {
+    /** Struttura rilevata e contenuto di tutti i file riletto e confrontato (CRC). */
+    FULL,
+
+    /** Struttura rilevata; il contenuto è stato riletto solo per una parte dei file. */
+    STRUCTURE,
+
+    /** Il controllo non era possibile (es. destinazione che non si può rileggere). */
+    SKIPPED,
+
+    /** Il controllo ha trovato qualcosa che non va. */
+    FAILED
+}
+
+/** Esito del controllo fatto rileggendo lo ZIP appena scritto. */
+data class Verification(
+    val status: VerifyStatus,
+    val entries: Int = 0,
+    val checkedEntries: Int = 0,
+    val detail: String? = null
+)
+
 sealed interface JobState {
     data object Idle : JobState
 
@@ -54,9 +82,17 @@ sealed interface JobState {
         val skipped: Int,
         val mode: ReduceMode = ReduceMode.ORIGINAL,
         val reducedCount: Int = 0,
-        val keptOriginal: Int = 0
+        val keptOriginal: Int = 0,
+        val verification: Verification = Verification(VerifyStatus.SKIPPED),
+        val videoLines: List<VideoLine> = emptyList(),
+        val problems: List<Problem> = emptyList(),
+        val notes: List<String> = emptyList()
     ) : JobState {
         val photos: Int get() = files - videos
+
+        /** true solo se tutto è andato bene: nessun file saltato, nessun avviso, controllo non fallito. */
+        val clean: Boolean
+            get() = problems.isEmpty() && notes.isEmpty() && verification.status != VerifyStatus.FAILED
     }
 
     data class Failed(val message: String) : JobState

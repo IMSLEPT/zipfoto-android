@@ -5,6 +5,8 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
+import com.zipfoto.app.zip.MediaSniffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.Locale
@@ -38,6 +40,42 @@ object Scanner {
 
     fun isMedia(mime: String?, name: String): Boolean = isImage(mime, name) || isVideo(mime, name)
 
+    /** true se il nome ha già un'estensione di foto o video conosciuta. */
+    fun hasMediaExtension(name: String): Boolean = extOf(name).let { it in imageExtensions || it in videoExtensions }
+
+    /** Tipo MIME vero e proprio (non vuoto e non generico). */
+    private fun usableMime(mime: String?): String? =
+        mime?.takeIf { it.isNotBlank() && it != "application/octet-stream" && it != "*/*" && it.contains('/') }
+
+    /**
+     * Aggiunge l'estensione giusta se il nome non ne ha una da foto/video: senza estensione un video
+     * nello ZIP non si aprirebbe con un doppio tocco. [mime] può essere quello dichiarato o quello riconosciuto dai byte.
+     */
+    fun withMediaExtension(name: String, mime: String?): String {
+        if (hasMediaExtension(name)) return name
+        val ext = MediaSniffer.extensionFor(mime)
+            ?: usableMime(mime)?.let { MimeTypeMap.getSingleton().getExtensionFromMimeType(it) }
+            ?: return name
+        return if (name.endsWith(".")) name + ext else "$name.$ext"
+    }
+
+    /** Primi byte del file, per riconoscerne il formato. Null se non si riesce a leggere. */
+    fun readHead(ctx: Context, uri: Uri): ByteArray? = try {
+        ctx.contentResolver.openInputStream(uri)?.use { s ->
+            val buf = ByteArray(MediaSniffer.HEAD_SIZE)
+            var n = 0
+            var zeros = 0
+            while (n < buf.size && zeros < 3) {
+                val r = s.read(buf, n, buf.size - n)
+                if (r < 0) break
+                if (r == 0) zeros++ else n += r
+            }
+            buf.copyOf(n)
+        }
+    } catch (_: Exception) {
+        null
+    }
+
     /**
      * Descrive gli URI scelti. Con [onlyMedia] scarta i file che sono chiaramente altro
      * (utile per i "Condividi" con tipo generico: foto e video insieme arrivano come tipo generico).
@@ -56,6 +94,7 @@ object Scanner {
         var name: String? = null
         var size = -1L
         var modified = 0L
+        var columnMime: String? = null
         try {
             ctx.contentResolver.query(uri, null, null, null, null)?.use { c ->
                 if (c.moveToFirst()) {
@@ -63,27 +102,42 @@ object Scanner {
                     val iSize = c.getColumnIndex(OpenableColumns.SIZE)
                     val iMod = c.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
                     val iMsMod = c.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
+                    // "mime_type" è lo stesso nome di colonna per MediaStore e per i provider di documenti
+                    val iMime = c.getColumnIndex(MediaStore.MediaColumns.MIME_TYPE)
                     if (iName >= 0 && !c.isNull(iName)) name = c.getString(iName)
                     if (iSize >= 0 && !c.isNull(iSize)) size = c.getLong(iSize)
                     if (iMod >= 0 && !c.isNull(iMod)) modified = c.getLong(iMod)
                     // Foto condivise dalla Galleria: la data sta nelle colonne di MediaStore (in secondi).
                     if (modified <= 0L && iMsMod >= 0 && !c.isNull(iMsMod)) modified = c.getLong(iMsMod) * 1000L
+                    if (iMime >= 0 && !c.isNull(iMime)) columnMime = c.getString(iMime)
                 }
             }
         } catch (_: Exception) {
             // provider che non risponde alla query: useremo valori di ripiego
         }
-        val clean = cleanName(name ?: uri.lastPathSegment ?: "file")
-        val mime = try {
+        var clean = cleanName(name ?: uri.lastPathSegment ?: "file")
+        val declared = try {
             ctx.contentResolver.getType(uri)
         } catch (_: Exception) {
             null
+        }
+        // Il tipo dichiarato vale solo se non è generico; altrimenti si prova la colonna del provider.
+        var mime: String? = usableMime(declared) ?: usableMime(columnMime) ?: declared ?: columnMime
+
+        // Né tipo né estensione dicono cosa sia: si guardano i primi byte (succede con alcuni provider cloud).
+        if (!isMedia(mime, clean)) {
+            val head = readHead(ctx, uri)
+            if (head != null && head.isNotEmpty()) {
+                val sniffed = MediaSniffer.sniff(head, head.size)
+                if (sniffed != null) mime = sniffed
+            }
         }
         if (onlyMedia && !isMedia(mime, clean)) {
             // Tipo noto e non multimediale: non è una foto né un video. Tipo ignoto o generico: lo si tiene.
             val generic = mime == null || mime == "application/octet-stream"
             if (!generic) return null
         }
+        if (isMedia(mime, clean) && !hasMediaExtension(clean)) clean = withMediaExtension(clean, mime)
         return MediaItem(uri, clean, size, modified, "", isVideo(mime, clean))
     }
 

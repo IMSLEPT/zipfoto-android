@@ -11,6 +11,8 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 
@@ -56,6 +58,25 @@ public final class StreamingZipWriter implements Closeable {
     /** bit 3 = data descriptor, bit 11 = nomi UTF-8 */
     private static final int FLAGS = 0x0008 | 0x0800;
     private static final int BUF_SIZE = 256 * 1024;
+
+    /** Cosa è stato effettivamente scritto per una voce: serve a verificare l'archivio a lavoro finito. */
+    public static final class EntryInfo {
+        public final String name;
+        public final long offset;
+        public final long usize;
+        public final long csize;
+        public final long crc;
+        public final boolean zip64;
+
+        EntryInfo(String name, long offset, long usize, long csize, long crc, boolean zip64) {
+            this.name = name;
+            this.offset = offset;
+            this.usize = usize;
+            this.csize = csize;
+            this.crc = crc;
+            this.zip64 = zip64;
+        }
+    }
 
     private static final class CdEntry {
         byte[] name;
@@ -131,10 +152,23 @@ public final class StreamingZipWriter implements Closeable {
         return entries.size();
     }
 
-    /** Aggiunge un file con il livello predefinito e senza Zip64 per la voce (file sotto i 4 GB). */
-    public void addEntry(String name, long lastModifiedMillis, InputStream in, Listener listener)
+    /** Voci scritte finora, nell'ordine di scrittura. */
+    public List<EntryInfo> entryInfos() {
+        ArrayList<EntryInfo> l = new ArrayList<>(entries.size());
+        for (CdEntry e : entries) {
+            l.add(new EntryInfo(new String(e.name, StandardCharsets.UTF_8), e.offset, e.usize, e.csize, e.crc, e.zip64));
+        }
+        return Collections.unmodifiableList(l);
+    }
+
+    /**
+     * Aggiunge un file con il livello predefinito e senza Zip64 per la voce (file sotto i 4 GB).
+     *
+     * @return i byte letti dalla sorgente (dimensione originale della voce)
+     */
+    public long addEntry(String name, long lastModifiedMillis, InputStream in, Listener listener)
             throws IOException {
-        addEntry(name, lastModifiedMillis, in, listener, level, false);
+        return addEntry(name, lastModifiedMillis, in, listener, level, false);
     }
 
     /**
@@ -144,8 +178,9 @@ public final class StreamingZipWriter implements Closeable {
      * @param entryLevel livello DEFLATE per questa voce (0 = copia senza ricompressione)
      * @param zip64      true per una voce che può superare i 4 GB (o di dimensione ignota):
      *                   si veda {@link #needsZip64Entry(long)}
+     * @return i byte letti dalla sorgente (dimensione originale della voce)
      */
-    public void addEntry(String name, long lastModifiedMillis, InputStream in, Listener listener,
+    public long addEntry(String name, long lastModifiedMillis, InputStream in, Listener listener,
                          int entryLevel, boolean zip64) throws IOException {
         if (finished) {
             throw new IllegalStateException("Archivio già chiuso");
@@ -244,6 +279,7 @@ public final class StreamingZipWriter implements Closeable {
         e.offset = offset;
         e.zip64 = zip64;
         entries.add(e);
+        return usize;
     }
 
     /** Scrive directory centrale e fine archivio (Zip64 se serve). Va chiamato una sola volta. */

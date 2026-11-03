@@ -34,6 +34,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Switch
@@ -82,6 +83,7 @@ import com.zipfoto.app.MediaItem
 import com.zipfoto.app.R
 import com.zipfoto.app.ReduceMode
 import com.zipfoto.app.Session
+import com.zipfoto.app.VerifyStatus
 import java.time.LocalDate
 import java.util.Locale
 
@@ -560,6 +562,12 @@ private fun DoneScreen(d: JobState.Done, onShare: (Uri) -> Unit, onNew: () -> Un
         animationSpec = spring(dampingRatio = 0.55f, stiffness = 300f),
         label = "check"
     )
+    val failedCheck = d.verification.status == VerifyStatus.FAILED
+    val title = when {
+        failedCheck -> "ZIP da controllare"
+        d.problems.isNotEmpty() -> "ZIP creato con avvisi"
+        else -> "ZIP creato"
+    }
 
     Column(
         Modifier
@@ -568,27 +576,69 @@ private fun DoneScreen(d: JobState.Done, onShare: (Uri) -> Unit, onNew: () -> Un
             .padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(Modifier.height(72.dp))
+        Spacer(Modifier.height(56.dp))
         Box(
             Modifier
                 .size(112.dp)
                 .scale(sc)
                 .clip(CircleShape)
-                .background(B.Primary)
+                .background(if (d.clean) B.Primary else B.Warn)
                 .border(3.dp, Color.White, CircleShape),
             contentAlignment = Alignment.Center
         ) {
-            Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(60.dp))
+            Icon(
+                if (d.clean) Icons.Filled.Check else Icons.Filled.Warning,
+                contentDescription = null, tint = Color.White, modifier = Modifier.size(60.dp)
+            )
         }
         Spacer(Modifier.height(28.dp))
-        Text("ZIP creato", style = T.Display)
+        Text(title, style = T.Display, textAlign = TextAlign.Center)
         Spacer(Modifier.height(8.dp))
         Text(
             "${countLabel(d.photos, d.videos)} · ${fmtBytes(d.outBytes)} · ${fmtDuration(d.seconds)}",
             style = T.Body,
             textAlign = TextAlign.Center
         )
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(20.dp))
+
+        // Esito del controllo fatto rileggendo il file appena scritto: mai "tutto ok" senza prova.
+        val v = d.verification
+        when (v.status) {
+            VerifyStatus.FULL ->
+                Pill("Controllo finale riuscito · ${v.checkedEntries} file riletti e confrontati", C.Cyan)
+            VerifyStatus.STRUCTURE ->
+                Pill(
+                    "Struttura verificata · contenuto riletto per ${v.checkedEntries} di ${v.entries} file",
+                    C.Cyan
+                )
+            VerifyStatus.SKIPPED ->
+                Pill("Controllo finale non eseguito" + (v.detail?.let { ": $it" } ?: ""), C.Amber)
+            VerifyStatus.FAILED ->
+                Pill("Controllo finale fallito" + (v.detail?.let { ": $it" } ?: ""), C.Magenta)
+        }
+        Spacer(Modifier.height(16.dp))
+
+        if (d.videoLines.isNotEmpty()) {
+            ReportBlock(
+                title = if (d.videoLines.size == 1) "Video nello ZIP" else "${d.videoLines.size} video nello ZIP",
+                lines = d.videoLines.map { it.name.substringAfterLast('/') + " · " + fmtBytes(it.bytes) },
+                tint = C.Cyan
+            )
+            Spacer(Modifier.height(12.dp))
+        }
+        if (d.problems.isNotEmpty()) {
+            ReportBlock(
+                title = if (d.problems.size == 1) "1 file NON archiviato" else "${d.problems.size} file NON archiviati",
+                lines = d.problems.map { it.name + " — " + it.reason },
+                tint = C.Amber
+            )
+            Spacer(Modifier.height(12.dp))
+        }
+        if (d.notes.isNotEmpty()) {
+            ReportBlock(title = "Da sapere", lines = d.notes, tint = C.Amber)
+            Spacer(Modifier.height(12.dp))
+        }
+
         if (d.mode.reduces) {
             Pill("Foto ridotte · ${d.mode.longSide} px · JPEG q${d.mode.quality}", C.Amber)
             Spacer(Modifier.height(14.dp))
@@ -624,15 +674,36 @@ private fun DoneScreen(d: JobState.Done, onShare: (Uri) -> Unit, onNew: () -> Un
         } else {
             Pill(if (d.videos > 0) "Foto e video originali, byte per byte" else "Originali, byte per byte", C.Cyan)
         }
-        if (d.skipped > 0) {
-            Spacer(Modifier.height(14.dp))
-            Text("${d.skipped} file non leggibili sono stati saltati", style = T.Small.copy(color = C.Amber))
-        }
-        Spacer(Modifier.height(48.dp))
+        Spacer(Modifier.height(40.dp))
         PrimaryButton("Condividi ZIP", Modifier.fillMaxWidth()) { onShare(d.output) }
         Spacer(Modifier.height(12.dp))
         GhostButton("Nuovo ZIP", Modifier.fillMaxWidth(), onNew)
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+/** Riquadro con un titolo e un elenco breve (il resto riassunto in "e altri N"). */
+@Composable
+private fun ReportBlock(title: String, lines: List<String>, tint: Color) {
+    val shape = RoundedCornerShape(18.dp)
+    val shownLines = lines.take(6)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(tint.copy(alpha = 0.10f))
+            .border(1.dp, tint.copy(alpha = 0.35f), shape)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Text(title, style = T.Label.copy(color = tint))
+        shownLines.forEach {
+            Spacer(Modifier.height(4.dp))
+            Text(it, style = T.Small.copy(color = C.Text), maxLines = 3, overflow = TextOverflow.Ellipsis)
+        }
+        if (lines.size > shownLines.size) {
+            Spacer(Modifier.height(4.dp))
+            Text("e altri ${lines.size - shownLines.size}", style = T.Small)
+        }
     }
 }
 

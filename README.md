@@ -20,6 +20,13 @@ Due modalità, scelte nella schermata di selezione:
 
 Il writer ZIP (`StreamingZipWriter.java`) scrive in streaming con memoria costante e supporta **Zip64**: archivi oltre 4 GB, oltre 65 535 file e, per singola voce, video oltre 4 GB (le voci da 2 GB in su, o di dimensione ignota, sono scritte in Zip64). Il lavoro gira in un servizio in primo piano: continua con lo schermo bloccato.
 
+### Come si evita un "ZIP riuscito" che non lo è
+
+- **Foto o video si decide dai byte**, non solo da nome e tipo dichiarato (`MediaSniffer.java`): un video senza estensione o con tipo generico resta un video e riceve l'estensione giusta (`.mp4`, `.mov`…).
+- **Mai file saltati in silenzio**: se un file non si apre o è vuoto, la schermata finale lo elenca con il motivo.
+- **Controllo finale**: a lavoro finito lo ZIP viene riaperto e riletto da un lettore indipendente dal writer (`ZipVerifier.java`): directory centrale, intestazioni, data descriptor e, per i video per primi, decompressione e CRC confrontati con i byte letti dalla sorgente. Se la destinazione non si può rileggere (alcuni provider cloud), la schermata dice "controllo non eseguito" invece di dichiarare successo.
+- La schermata finale elenca i video effettivamente scritti con la loro dimensione.
+
 ## Uso
 
 1. Scegli cosa archiviare:
@@ -35,7 +42,18 @@ Il writer ZIP (`StreamingZipWriter.java`) scrive in streaming con memoria costan
 L'APK viene compilato da GitHub Actions a ogni push su `main` (workflow `Build APK`) e pubblicato in *Releases*.
 In locale: `./gradlew assembleRelease` (serve Android SDK 35 e JDK 17).
 
-## Test del writer ZIP
+## Test della catena ZIP
+
+Si eseguono su una JVM qualsiasi (girano anche in CI prima della build). Ogni archivio è riletto da `java.util.zip`, `unzip -t` e Python, oltre che da `ZipVerifier`:
+
+```
+javac -d build/ziptest app/src/main/java/com/zipfoto/app/zip/*.java tools/ZipDebugTest.java
+LC_ALL=C.UTF-8 java -cp build/ziptest ZipDebugTest
+```
+
+Copre: video da 24 MB copiato senza ricompressione, file vuoto, nomi UTF-8 e sottocartelle, voce Zip64 forzata su file piccoli, sorgenti con letture a pezzi minuscoli o vuoti, DEFLATE, 70.000 voci (Zip64 d'archivio), file troncato / dati alterati / directory diversa (il verificatore deve accorgersene), riconoscimento dei formati dai byte.
+
+### Test dei grandi archivi
 
 ```
 javac -d out app/src/main/java/com/zipfoto/app/zip/*.java tools/ZipSelfTest.java

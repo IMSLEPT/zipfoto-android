@@ -20,6 +20,13 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # Test della catena ZIP su JVM: se uno fallisce, l'APK non viene costruito né pubblicato.
+      - name: Test della catena ZIP
+        run: |
+          mkdir -p build/ziptest
+          javac -Xlint:all -d build/ziptest app/src/main/java/com/zipfoto/app/zip/*.java tools/ZipDebugTest.java
+          LC_ALL=C.UTF-8 java -cp build/ziptest ZipDebugTest
+
       # Il runner ha già l'Android SDK: basta accettare le licenze (AGP scarica il resto).
       - name: Accept Android SDK licenses
         run: |
