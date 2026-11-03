@@ -86,7 +86,8 @@ import java.time.LocalDate
 import java.util.Locale
 
 class Actions(
-    val onPickMedia: () -> Unit,
+    val onPickLibrary: () -> Unit,
+    val onPickFiles: () -> Unit,
     val onPickFolder: () -> Unit,
     val onCreate: (String) -> Unit,
     val onCancel: () -> Unit,
@@ -117,7 +118,7 @@ fun ZippixApp(scanning: Boolean, actions: Actions) {
     AppBackground {
         Crossfade(targetState = screen, animationSpec = tween(250), label = "screen") { s ->
             when (s) {
-                Screen.Home -> HomeScreen(actions.onPickMedia, actions.onPickFolder)
+                Screen.Home -> HomeScreen(actions.onPickLibrary, actions.onPickFiles, actions.onPickFolder)
                 Screen.Select -> SelectionScreen(
                     items = items,
                     scanning = scanning,
@@ -127,7 +128,8 @@ fun ZippixApp(scanning: Boolean, actions: Actions) {
                     onMode = { Session.setReduceMode(it) },
                     onRemove = { Session.remove(it) },
                     onClear = { actions.onNew() },
-                    onAddMedia = actions.onPickMedia,
+                    onAddLibrary = actions.onPickLibrary,
+                    onAddFiles = actions.onPickFiles,
                     onAddFolder = actions.onPickFolder,
                     onCreate = actions.onCreate
                 )
@@ -144,7 +146,7 @@ fun ZippixApp(scanning: Boolean, actions: Actions) {
 // ---------------------------------------------------------------------------------------------
 
 @Composable
-private fun HomeScreen(onMedia: () -> Unit, onFolder: () -> Unit) {
+private fun HomeScreen(onLibrary: () -> Unit, onFiles: () -> Unit, onFolder: () -> Unit) {
     Column(
         Modifier
             .fillMaxSize()
@@ -164,14 +166,21 @@ private fun HomeScreen(onMedia: () -> Unit, onFolder: () -> Unit) {
         Spacer(Modifier.height(32.dp))
 
         ActionCard(
-            title = "Scegli foto e video",
-            subtitle = "Anche centinaia in un colpo solo",
+            title = "Foto e video",
+            subtitle = "Dalla Galleria e da Google Foto",
             tile = B.Media,
-            onClick = onMedia
+            onClick = onLibrary
         ) { PhotoGlyph(Modifier.size(30.dp), Color.White) }
         Spacer(Modifier.height(14.dp))
         ActionCard(
-            title = "Scegli una cartella",
+            title = "Dai file",
+            subtitle = "Drive, Download e altre app di archiviazione",
+            tile = B.Violet,
+            onClick = onFiles
+        ) { FileGlyph(Modifier.size(30.dp), Color.White) }
+        Spacer(Modifier.height(14.dp))
+        ActionCard(
+            title = "Una cartella",
             subtitle = "Tutto il contenuto, sottocartelle incluse",
             tile = B.Primary,
             onClick = onFolder
@@ -180,7 +189,7 @@ private fun HomeScreen(onMedia: () -> Unit, onFolder: () -> Unit) {
         Spacer(Modifier.height(30.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Pill("Qualità originale", C.Cyan)
-            Pill("100% offline", C.Amber)
+            Pill("Nessun upload", C.Amber)
         }
         Spacer(Modifier.height(20.dp))
         Text(
@@ -221,7 +230,8 @@ private fun SelectionScreen(
     onMode: (ReduceMode) -> Unit,
     onRemove: (Uri) -> Unit,
     onClear: () -> Unit,
-    onAddMedia: () -> Unit,
+    onAddLibrary: () -> Unit,
+    onAddFiles: () -> Unit,
     onAddFolder: () -> Unit,
     onCreate: (String) -> Unit
 ) {
@@ -289,9 +299,10 @@ private fun SelectionScreen(
                 .border(2.dp, Brush.verticalGradient(listOf(Color.White, Color.Transparent)), sheetShape)
                 .padding(horizontal = 20.dp, vertical = 18.dp)
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                SoftButton("+ Foto e video", Modifier.weight(1f), onAddMedia)
-                SoftButton("+ Cartella", Modifier.weight(1f), onAddFolder)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SoftButton("+ Foto e video", Modifier.weight(1.5f), onAddLibrary)
+                SoftButton("+ File", Modifier.weight(1f), onAddFiles)
+                SoftButton("+ Cartella", Modifier.weight(1.2f), onAddFolder)
             }
             Spacer(Modifier.height(14.dp))
             Row(
@@ -716,7 +727,7 @@ private fun SoftButton(text: String, modifier: Modifier = Modifier, onClick: () 
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Text(text, style = T.LabelInk.copy(fontSize = 15.sp))
+        Text(text, style = T.LabelInk.copy(fontSize = 14.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -822,6 +833,27 @@ private fun PhotoGlyph(modifier: Modifier, color: Color) {
             lineTo(w * 0.58f, h * 0.66f)
             lineTo(w * 0.70f, h * 0.56f)
             lineTo(w * 0.86f, h * 0.76f)
+        }
+        drawPath(p, color, style = Stroke(sw, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    }
+}
+
+@Composable
+private fun FileGlyph(modifier: Modifier, color: Color) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val sw = w * 0.085f
+        val p = Path().apply {
+            moveTo(w * 0.22f, h * 0.10f)
+            lineTo(w * 0.60f, h * 0.10f)
+            lineTo(w * 0.80f, h * 0.30f)
+            lineTo(w * 0.80f, h * 0.90f)
+            lineTo(w * 0.22f, h * 0.90f)
+            close()
+            moveTo(w * 0.60f, h * 0.10f)
+            lineTo(w * 0.60f, h * 0.30f)
+            lineTo(w * 0.80f, h * 0.30f)
         }
         drawPath(p, color, style = Stroke(sw, cap = StrokeCap.Round, join = StrokeJoin.Round))
     }

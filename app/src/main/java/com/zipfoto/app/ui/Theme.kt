@@ -63,6 +63,7 @@ object C {
 object B {
     val Primary = Brush.verticalGradient(listOf(C.Cyan, C.Blue, C.Cobalt))
     val Media = Brush.linearGradient(listOf(C.Amber, C.Orange, C.Magenta, C.Purple, C.Indigo))
+    val Violet = Brush.linearGradient(listOf(C.Purple, C.Indigo))
     val Paper = Brush.verticalGradient(listOf(C.Paper, C.PaperLow))
 }
 

@@ -13,6 +13,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.mutableStateOf
@@ -57,7 +58,13 @@ class MainActivity : ComponentActivity() {
     private var pendingName = "Archivio.zip"
     private var askedNotifications = false
 
-    private val pickMedia = registerForActivityResult(OpenMedia()) { uris ->
+    // Selettore foto di sistema: Galleria e Google Foto (media cloud inclusi). Ha un tetto per selezione: si può ripetere.
+    private val pickLibrary = registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
+        if (uris.isNotEmpty()) addMedia(uris, persist = true, onlyMedia = false)
+    }
+
+    // Selettore file: Drive, Download e le altre app di archiviazione.
+    private val pickFiles = registerForActivityResult(OpenMedia()) { uris ->
         if (uris.isNotEmpty()) addMedia(uris, persist = true, onlyMedia = false)
     }
 
@@ -81,7 +88,10 @@ class MainActivity : ComponentActivity() {
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         )
         val actions = Actions(
-            onPickMedia = { pickMedia.launch(Unit) },
+            onPickLibrary = {
+                pickLibrary.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+            },
+            onPickFiles = { pickFiles.launch(Unit) },
             onPickFolder = { pickFolder.launch(null) },
             onCreate = { name -> requestDestination(name) },
             onCancel = { cancelZip() },

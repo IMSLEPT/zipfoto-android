@@ -22,7 +22,11 @@ Il writer ZIP (`StreamingZipWriter.java`) scrive in streaming con memoria costan
 
 ## Uso
 
-1. **Scegli foto e video** (selettore documenti, nessun limite di quantità) o **Scegli una cartella** (sottocartelle incluse), oppure dalla Galleria: *Condividi → Zippix*.
+1. Scegli cosa archiviare:
+   - **Foto e video**: selettore foto di sistema, mostra la Galleria e **Google Foto**. Il sistema fissa un tetto di elementi per selezione: si può ripetere, i doppioni vengono ignorati.
+   - **Dai file**: Drive, Download e altre app di archiviazione, senza limite di quantità.
+   - **Una cartella** (sottocartelle incluse).
+   - oppure dalla Galleria o da Google Foto: *Condividi → Zippix*.
 2. Scegli *Originale* o un livello ridotto, dai un nome, scegli dove salvare (Download, Drive, ecc.), tocca **Crea ZIP**.
 3. Al termine puoi condividere lo ZIP.
 
