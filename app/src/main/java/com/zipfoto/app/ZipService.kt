@@ -410,6 +410,17 @@ class ZipService : Service() {
         return "$path.jpg"
     }
 
+    /** Nome della voce nello ZIP con estensione .mp4 (il video ridotto è sempre un MP4). */
+    private fun mp4Name(path: String): String {
+        val slash = path.lastIndexOf('/')
+        val dot = path.lastIndexOf('.')
+        if (dot > slash + 1) {
+            if (path.substring(dot + 1).equals("mp4", ignoreCase = true)) return path
+            return path.substring(0, dot) + ".mp4"
+        }
+        return "$path.mp4"
+    }
+
     private class Opened(val stream: InputStream, val length: Long)
 
     private class OpenResult(val opened: Opened?, val reason: String)
